@@ -16,9 +16,7 @@
  *    You should have received a copy of the GNU Lesser General Public License
  *    along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-
 package tests;
-
 import com.seibel.distanthorizons.api.enums.config.EDhApiWorldCompressionMode;
 import com.seibel.distanthorizons.api.enums.worldGeneration.EDhApiWorldGenerationStep;
 import com.seibel.distanthorizons.core.dataObjects.fullData.FullDataPointIdMap;
@@ -33,63 +31,108 @@ import org.junit.Assert;
 import org.junit.Test;
 import testItems.wrappers.TestBiomeWrapper;
 import testItems.wrappers.TestBlockStateWrapper;
-
 public class FullDataSourceV2ChildUpsampleTest
 {
 	@Test
-	public void childUpsampleCopiesParentColumnsBeforeRemapping() throws DataCorruptedException
+	public void childUpsampleExpandsTallMultiLayerColumnsAcrossTwoByTwoFootprint() throws DataCorruptedException
 	{
 		long parentPos = DhSectionPos.encode((byte) 7, 0, 0);
 		long childPos = DhSectionPos.getChildByIndex(parentPos, 0);
-		int sourceIndex = FullDataSourceV2.relativePosToIndex(0, 0);
-		
+		int sourceX = 17;
+		int sourceZ = 23;
+		int sourceIndex = FullDataSourceV2.relativePosToIndex(sourceX, sourceZ);
 		FullDataPointIdMap parentMapping = new FullDataPointIdMap(parentPos);
-		int parentIdA = addMapping(parentMapping, "parent_a");
-		int parentIdB = addMapping(parentMapping, "parent_b");
+		int upperId = addMapping(parentMapping, "upper");
+		int lowerId = addMapping(parentMapping, "lower");
 		LongArrayList[] parentColumns = emptyColumns();
-		parentColumns[sourceIndex].add(FullDataPointUtil.encode(parentIdB, 10, 100, LodUtil.MIN_MC_LIGHT, LodUtil.MAX_MC_LIGHT));
-		parentColumns[sourceIndex].add(FullDataPointUtil.encode(parentIdA, 100, 0, LodUtil.MIN_MC_LIGHT, LodUtil.MAX_MC_LIGHT));
-		
+		parentColumns[sourceIndex].add(FullDataPointUtil.encode(upperId, 168, 9_000, (byte) 7, (byte) 15));
+		parentColumns[sourceIndex].add(FullDataPointUtil.encode(lowerId, 9_000, 0, (byte) 3, (byte) 12));
 		FullDataPointIdMap childMapping = new FullDataPointIdMap(childPos);
 		addMapping(childMapping, "child_existing");
-		
 		try (
 			FullDataSourceV2 parent = FullDataSourceV2.createWithData(
 				parentPos,
 				parentMapping,
 				parentColumns,
 				filledGenerationSteps(EDhApiWorldGenerationStep.FEATURES),
-				filledCompressionModes(EDhApiWorldCompressionMode.MERGE_SAME_BLOCKS)
-			);
+				filledCompressionModes(EDhApiWorldCompressionMode.MERGE_SAME_BLOCKS));
 			FullDataSourceV2 child = FullDataSourceV2.createWithData(
 				childPos,
 				childMapping,
 				emptyColumns(),
 				filledGenerationSteps(EDhApiWorldGenerationStep.EMPTY),
-				filledCompressionModes(EDhApiWorldCompressionMode.MERGE_SAME_BLOCKS)
-			)
+				filledCompressionModes(EDhApiWorldCompressionMode.MERGE_SAME_BLOCKS))
 		)
 		{
 			LongArrayList parentColumnBefore = new LongArrayList(parent.dataPoints[sourceIndex]);
-			
+			Assert.assertTrue(child.updateFromDataSource(parent));
+			Assert.assertEquals(parentColumnBefore, parent.dataPoints[sourceIndex]);
+			LongArrayList firstExpandedColumn = null;
+			for (int targetX = sourceX * 2; targetX < sourceX * 2 + 2; targetX++)
+			{
+				for (int targetZ = sourceZ * 2; targetZ < sourceZ * 2 + 2; targetZ++)
+				{
+					LongArrayList column = child.dataPoints[FullDataSourceV2.relativePosToIndex(targetX, targetZ)];
+					Assert.assertEquals(2, column.size());
+					assertVerticalRange(column.getLong(0), 9_000, 168, 7, 15);
+					assertVerticalRange(column.getLong(1), 0, 9_000, 3, 12);
+					if (firstExpandedColumn == null)
+					{
+						firstExpandedColumn = column;
+					}
+					else
+					{
+						Assert.assertNotSame(firstExpandedColumn, column);
+					}
+				}
+			}
+		}
+	}
+	@Test
+	public void childUpsampleCopiesParentColumnsBeforeRemapping() throws DataCorruptedException
+	{
+		long parentPos = DhSectionPos.encode((byte) 7, 0, 0);
+		long childPos = DhSectionPos.getChildByIndex(parentPos, 0);
+		int sourceIndex = FullDataSourceV2.relativePosToIndex(0, 0);
+		FullDataPointIdMap parentMapping = new FullDataPointIdMap(parentPos);
+		int parentIdA = addMapping(parentMapping, "parent_a");
+		int parentIdB = addMapping(parentMapping, "parent_b");
+		LongArrayList[] parentColumns = emptyColumns();
+		parentColumns[sourceIndex].add(FullDataPointUtil.encode(parentIdB, 10, 100, LodUtil.MIN_MC_LIGHT, LodUtil.MAX_MC_LIGHT));
+		parentColumns[sourceIndex].add(FullDataPointUtil.encode(parentIdA, 100, 0, LodUtil.MIN_MC_LIGHT, LodUtil.MAX_MC_LIGHT));
+		FullDataPointIdMap childMapping = new FullDataPointIdMap(childPos);
+		addMapping(childMapping, "child_existing");
+		try (
+			FullDataSourceV2 parent = FullDataSourceV2.createWithData(
+				parentPos,
+				parentMapping,
+				parentColumns,
+				filledGenerationSteps(EDhApiWorldGenerationStep.FEATURES),
+				filledCompressionModes(EDhApiWorldCompressionMode.MERGE_SAME_BLOCKS));
+			FullDataSourceV2 child = FullDataSourceV2.createWithData(
+				childPos,
+				childMapping,
+				emptyColumns(),
+				filledGenerationSteps(EDhApiWorldGenerationStep.EMPTY),
+				filledCompressionModes(EDhApiWorldCompressionMode.MERGE_SAME_BLOCKS))
+		)
+		{
+			LongArrayList parentColumnBefore = new LongArrayList(parent.dataPoints[sourceIndex]);
 			Assert.assertTrue(child.updateFromDataSource(parent));
 			Assert.assertEquals(parentColumnBefore, parent.dataPoints[sourceIndex]);
 			Assert.assertNotSame(parent.dataPoints[sourceIndex], child.dataPoints[sourceIndex]);
 		}
 	}
-	
 	@Test
 	public void childUpsampleKeepsExistingChildColumnMetadata() throws DataCorruptedException
 	{
 		long parentPos = DhSectionPos.encode((byte) 7, 0, 0);
 		long childPos = DhSectionPos.getChildByIndex(parentPos, 0);
 		int targetIndex = FullDataSourceV2.relativePosToIndex(0, 0);
-		
 		FullDataPointIdMap parentMapping = new FullDataPointIdMap(parentPos);
 		int parentId = addMapping(parentMapping, "parent");
 		LongArrayList[] parentColumns = emptyColumns();
 		parentColumns[targetIndex].add(FullDataPointUtil.encode(parentId, 16, 0, LodUtil.MIN_MC_LIGHT, LodUtil.MAX_MC_LIGHT));
-		
 		FullDataPointIdMap childMapping = new FullDataPointIdMap(childPos);
 		int childId = addMapping(childMapping, "child");
 		LongArrayList[] childColumns = emptyColumns();
@@ -98,16 +141,15 @@ public class FullDataSourceV2ChildUpsampleTest
 		childGenerationSteps[targetIndex] = EDhApiWorldGenerationStep.FEATURES.value;
 		byte[] childCompressionModes = filledCompressionModes(EDhApiWorldCompressionMode.VISUALLY_EQUAL);
 		childCompressionModes[targetIndex] = EDhApiWorldCompressionMode.MERGE_SAME_BLOCKS.value;
-		
 		try (
 			FullDataSourceV2 parent = FullDataSourceV2.createWithData(
 				parentPos,
 				parentMapping,
 				parentColumns,
 				filledGenerationSteps(EDhApiWorldGenerationStep.FEATURES),
-				filledCompressionModes(EDhApiWorldCompressionMode.VISUALLY_EQUAL)
-			);
-			FullDataSourceV2 child = FullDataSourceV2.createWithData(childPos, childMapping, childColumns, childGenerationSteps, childCompressionModes)
+				filledCompressionModes(EDhApiWorldCompressionMode.VISUALLY_EQUAL));
+			FullDataSourceV2 child = FullDataSourceV2.createWithData(
+				childPos, childMapping, childColumns, childGenerationSteps, childCompressionModes)
 		)
 		{
 			Assert.assertTrue(child.updateFromDataSource(parent));
@@ -115,7 +157,6 @@ public class FullDataSourceV2ChildUpsampleTest
 			Assert.assertEquals(EDhApiWorldCompressionMode.MERGE_SAME_BLOCKS.value, child.columnWorldCompressionMode.getByte(targetIndex));
 		}
 	}
-	
 	@Test
 	public void childUpsampleUsesParentSourceColumnCompression() throws DataCorruptedException
 	{
@@ -123,29 +164,25 @@ public class FullDataSourceV2ChildUpsampleTest
 		long childPos = DhSectionPos.getChildByIndex(parentPos, 0);
 		int targetIndex = FullDataSourceV2.relativePosToIndex(2, 0);
 		int sourceIndex = FullDataSourceV2.relativePosToIndex(1, 0);
-		
 		FullDataPointIdMap parentMapping = new FullDataPointIdMap(parentPos);
 		int parentId = addMapping(parentMapping, "parent");
 		LongArrayList[] parentColumns = emptyColumns();
 		parentColumns[sourceIndex].add(FullDataPointUtil.encode(parentId, 16, 0, LodUtil.MIN_MC_LIGHT, LodUtil.MAX_MC_LIGHT));
 		byte[] parentCompressionModes = filledCompressionModes(EDhApiWorldCompressionMode.MERGE_SAME_BLOCKS);
 		parentCompressionModes[sourceIndex] = EDhApiWorldCompressionMode.VISUALLY_EQUAL.value;
-		
 		try (
 			FullDataSourceV2 parent = FullDataSourceV2.createWithData(
 				parentPos,
 				parentMapping,
 				parentColumns,
 				filledGenerationSteps(EDhApiWorldGenerationStep.FEATURES),
-				parentCompressionModes
-			);
+				parentCompressionModes);
 			FullDataSourceV2 child = FullDataSourceV2.createWithData(
 				childPos,
 				new FullDataPointIdMap(childPos),
 				emptyColumns(),
 				filledGenerationSteps(EDhApiWorldGenerationStep.EMPTY),
-				filledCompressionModes(EDhApiWorldCompressionMode.MERGE_SAME_BLOCKS)
-			)
+				filledCompressionModes(EDhApiWorldCompressionMode.MERGE_SAME_BLOCKS))
 		)
 		{
 			Assert.assertTrue(child.updateFromDataSource(parent));
@@ -153,12 +190,17 @@ public class FullDataSourceV2ChildUpsampleTest
 			Assert.assertEquals(EDhApiWorldCompressionMode.VISUALLY_EQUAL.value, child.columnWorldCompressionMode.getByte(targetIndex));
 		}
 	}
-	
 	private static int addMapping(FullDataPointIdMap mapping, String name)
 	{
 		return mapping.addIfNotPresentAndGetId(new TestBiomeWrapper(name), new TestBlockStateWrapper(name));
 	}
-	
+	private static void assertVerticalRange(long dataPoint, int bottomY, int height, int blockLight, int skyLight)
+	{
+		Assert.assertEquals(bottomY, FullDataPointUtil.getBottomY(dataPoint));
+		Assert.assertEquals(height, FullDataPointUtil.getHeight(dataPoint));
+		Assert.assertEquals(blockLight, FullDataPointUtil.getBlockLight(dataPoint));
+		Assert.assertEquals(skyLight, FullDataPointUtil.getSkyLight(dataPoint));
+	}
 	private static LongArrayList[] emptyColumns()
 	{
 		LongArrayList[] columns = new LongArrayList[FullDataSourceV2.WIDTH * FullDataSourceV2.WIDTH];
@@ -166,17 +208,14 @@ public class FullDataSourceV2ChildUpsampleTest
 		{
 			columns[i] = new LongArrayList();
 		}
-		
 		return columns;
 	}
-	
 	private static byte[] filledGenerationSteps(EDhApiWorldGenerationStep generationStep)
 	{
 		byte[] values = new byte[FullDataSourceV2.WIDTH * FullDataSourceV2.WIDTH];
 		Arrays.fill(values, generationStep.value);
 		return values;
 	}
-	
 	private static byte[] filledCompressionModes(EDhApiWorldCompressionMode compressionMode)
 	{
 		byte[] values = new byte[FullDataSourceV2.WIDTH * FullDataSourceV2.WIDTH];

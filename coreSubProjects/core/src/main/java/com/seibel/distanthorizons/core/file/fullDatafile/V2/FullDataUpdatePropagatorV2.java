@@ -198,10 +198,7 @@ public class FullDataUpdatePropagatorV2 implements IDebugRenderable, AutoCloseab
 								// will return null if the file handler is shutting down
 								if (parentDataSource != null)
 								{
-									// Apply all children before running the whole-parent cleanup,
-									// occlusion, and hash passes.
-									try (FullDataSourceV2.UpdateBatch updateBatch = parentDataSource.beginUpdateBatch())
-									{
+									// apply each child pos to the parent
 										for (Long childPos : updatePosByParentPos.get(parentUpdatePos))
 										{
 											ReentrantLock childReadLock = this.dataUpdater.updateLockProvider.getLock(childPos);
@@ -215,7 +212,7 @@ public class FullDataUpdatePropagatorV2 implements IDebugRenderable, AutoCloseab
 													// can return null when the file handler is being shut down
 													if (childDataSource != null)
 													{
-														updateBatch.updateFromDataSource(childDataSource);
+													parentDataSource.updateFromDataSource(childDataSource);
 													}
 												}
 											}
@@ -231,7 +228,6 @@ public class FullDataUpdatePropagatorV2 implements IDebugRenderable, AutoCloseab
 												this.dataUpdater.lockedPosSet.remove(childPos);
 											}
 										}
-									}
 									
 									
 									if (DhSectionPos.getDetailLevel(parentUpdatePos) < FullDataSourceProviderV2.ROOT_SECTION_DETAIL_LEVEL)
@@ -239,7 +235,7 @@ public class FullDataUpdatePropagatorV2 implements IDebugRenderable, AutoCloseab
 										parentDataSource.applyToParent = true;
 									}
 									
-									this.dataUpdater.saveUpdatedDataSource(parentDataSource);
+									this.dataUpdater.updateDataSource(parentDataSource);
 								}
 							}
 						}
@@ -339,7 +335,7 @@ public class FullDataUpdatePropagatorV2 implements IDebugRenderable, AutoCloseab
 															childDataSource.applyToChildren = true;
 														}
 														
-														this.dataUpdater.saveUpdatedDataSource(childDataSource);
+														this.dataUpdater.updateDataSource(childDataSource);
 													}
 												}
 											}

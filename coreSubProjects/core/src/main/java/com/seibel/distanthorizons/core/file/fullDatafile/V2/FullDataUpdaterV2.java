@@ -135,43 +135,8 @@ public class FullDataUpdaterV2 implements IDebugRenderable, AutoCloseable
 					boolean dataModified = recipientDataSource.updateFromDataSource(inputData);
 					if (dataModified)
 					{
-						this.persistAndNotifyDataSource(recipientDataSource);
-					}
-				}
-			}
-		}
-		catch (Exception e)
-		{
-			LOGGER.error("Error updating pos ["+DhSectionPos.toString(updatePos)+"], error: "+e.getMessage(), e);
-		}
-		finally
-		{
-			updateLock.unlock();
-			this.lockedPosSet.remove(updatePos);
-		}
-	}
-
-	/**
-	 * Persists a data source which was loaded and updated while its positional
-	 * update lock was already held. This avoids loading and merging the same row
-	 * a second time during parent/child propagation.
-	 */
-	void saveUpdatedDataSource(@NotNull FullDataSourceV2 dataSource)
-	{
-		long pos = dataSource.getPos();
-		ReentrantLock updateLock = this.updateLockProvider.getLock(pos);
-		if (!updateLock.isHeldByCurrentThread())
-		{
-			throw new IllegalStateException("Updated data source must be saved while holding its positional lock: ["+DhSectionPos.toString(pos)+"].");
-		}
-
-		this.persistAndNotifyDataSource(dataSource);
-	}
-
-	private void persistAndNotifyDataSource(@NotNull FullDataSourceV2 dataSource)
-	{
 		// save the updated data to the database
-		try (FullDataSourceV2DTO dto = this.createDtoFromDataSource(dataSource))
+						try (FullDataSourceV2DTO dto = this.createDtoFromDataSource(recipientDataSource))
 		{
 			if (dto != null)
 			{
@@ -186,9 +151,22 @@ public class FullDataUpdaterV2 implements IDebugRenderable, AutoCloseable
 			{
 				if (listener != null)
 				{
-					listener.OnDataSourceUpdated(dataSource);
+									listener.OnDataSourceUpdated(recipientDataSource);
 				}
 			}
+						}
+					}
+				}
+			}
+		}
+		catch (Exception e)
+		{
+			LOGGER.error("Error updating pos ["+DhSectionPos.toString(updatePos)+"], error: "+e.getMessage(), e);
+		}
+		finally
+		{
+			updateLock.unlock();
+			this.lockedPosSet.remove(updatePos);
 		}
 	}
 

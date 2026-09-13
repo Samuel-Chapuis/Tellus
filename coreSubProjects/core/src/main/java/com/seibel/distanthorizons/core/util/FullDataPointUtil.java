@@ -26,15 +26,8 @@ import org.jetbrains.annotations.Contract;
  * BL: Block light <br>
  * SL: Sky light <br><br>
  *
- * =======Bit layout=======	<br>
- * SL SL SL SL  BL BL BL BL <-- Top bits <br>
- * MY MY MY MY  MY MY MY MY	<br>
- * MY MY MY MY  HI HI HI HI	<br>
- * HI HI HI HI  HI HI HI HI	<br>
- * ID ID ID ID  ID ID ID ID	<br>
- * ID ID ID ID  ID ID ID ID	<br>
- * ID ID ID ID  ID ID ID ID	<br>
- * ID ID ID ID  ID ID ID ID <-- Bottom bits	<br>
+ * =======Bit layout (high to low)======= <br>
+ * BL: 4, SL: 4, MY: 14, HI: 14, ID: 28 <br>
  * </code>
  *
  * @see FullDataSourceV1
@@ -47,6 +40,8 @@ public class FullDataPointUtil
 	/** Represents the data held by an empty data point */
 	public static final int EMPTY_DATA_POINT = 0;
 	
+	// Four ID bits are reassigned to the two vertical fields so full-data
+	// points can represent worlds up to 16,383 blocks tall.
 	public static final int ID_WIDTH = 28;
 	public static final int HEIGHT_WIDTH = 14;
 	public static final int MIN_Y_WIDTH = 14;
@@ -67,6 +62,14 @@ public class FullDataPointUtil
 	public static final int MIN_Y_MASK = (int) Math.pow(2, MIN_Y_WIDTH) - 1;
 	public static final int SKY_LIGHT_MASK = (int) Math.pow(2, SKY_LIGHT_WIDTH) - 1;
 	public static final int BLOCK_LIGHT_MASK = (int) Math.pow(2, BLOCK_LIGHT_WIDTH) - 1;
+
+	private static final int LEGACY_ID_OFFSET = 0;
+	private static final int LEGACY_HEIGHT_OFFSET = 32;
+	private static final int LEGACY_MIN_Y_OFFSET = 44;
+	private static final int LEGACY_SKY_LIGHT_OFFSET = 56;
+	private static final int LEGACY_BLOCK_LIGHT_OFFSET = 60;
+	private static final long LEGACY_ID_MASK = Integer.MAX_VALUE;
+	private static final int LEGACY_Y_MASK = 0xFFF;
 	
 	
 	//==========//
@@ -120,7 +123,7 @@ public class FullDataPointUtil
 		// ID
 		if (id < 0)
 		{
-			throw new DataCorruptedException("Full datapoint ID [" + relMinY + "] must be greater than zero.");
+			throw new DataCorruptedException("Full datapoint ID [" + id + "] must be greater than or equal to zero.");
 		}
 		if (id > ID_MASK)
 		{
@@ -182,11 +185,63 @@ public class FullDataPointUtil
 	//=========//
 	//region
 	
-	public static long setId(long data, int id) { return (data & ~(((ID_MASK)) << ID_OFFSET)) | (((long)(id) & ID_MASK) << ID_OFFSET); }
-	public static long setHeight(long data, int height) { return (data & ~(((long)(HEIGHT_MASK)) << HEIGHT_OFFSET)) | (((long)(height) & HEIGHT_MASK) << HEIGHT_OFFSET); }
-	public static long setBottomY(long data, int bottomY) { return (data & ~(((long)(MIN_Y_MASK)) << MIN_Y_OFFSET)) | (((long)(bottomY) & MIN_Y_MASK) << MIN_Y_OFFSET); }
+	public static long setId(long data, int id) { return (data & ~(ID_MASK << ID_OFFSET)) | (((long) id & ID_MASK) << ID_OFFSET); }
+	public static long setHeight(long data, int height) { return (data & ~((long) HEIGHT_MASK << HEIGHT_OFFSET)) | (((long) height & HEIGHT_MASK) << HEIGHT_OFFSET); }
+	public static long setBottomY(long data, int bottomY) { return (data & ~((long) MIN_Y_MASK << MIN_Y_OFFSET)) | (((long) bottomY & MIN_Y_MASK) << MIN_Y_OFFSET); }
 	public static long setBlockLight(long data, byte blockLight) { return (data & ~((long) BLOCK_LIGHT_MASK << BLOCK_LIGHT_OFFSET) | (long) blockLight << BLOCK_LIGHT_OFFSET); }
 	public static long setSkyLight(long data, int skyLight) { return (data & ~((long) SKY_LIGHT_MASK << SKY_LIGHT_OFFSET) | (long) skyLight << SKY_LIGHT_OFFSET); }
+
+	//endregion
+
+
+
+	//======================//
+	// legacy compatibility //
+	//======================//
+	//region
+
+	/** Converts the stock 32/12/12 full-data layout into the extended-height layout. */
+	public static long fromLegacyDataPoint(long legacyData) throws DataCorruptedException
+	{
+		if (legacyData == EMPTY_DATA_POINT)
+		{
+			return EMPTY_DATA_POINT;
+		}
+
+		int id = (int) ((legacyData >>> LEGACY_ID_OFFSET) & LEGACY_ID_MASK);
+		int height = (int) ((legacyData >>> LEGACY_HEIGHT_OFFSET) & LEGACY_Y_MASK);
+		int bottomY = (int) ((legacyData >>> LEGACY_MIN_Y_OFFSET) & LEGACY_Y_MASK);
+		byte skyLight = (byte) ((legacyData >>> LEGACY_SKY_LIGHT_OFFSET) & SKY_LIGHT_MASK);
+		byte blockLight = (byte) ((legacyData >>> LEGACY_BLOCK_LIGHT_OFFSET) & BLOCK_LIGHT_MASK);
+		validateData(id, height, bottomY, blockLight, skyLight);
+		return encode(id, height, bottomY, blockLight, skyLight);
+	}
+
+	/** Converts an extended-height point back to the stock layout when its Y values fit. */
+	public static long toLegacyDataPoint(long data) throws DataCorruptedException
+	{
+		if (data == EMPTY_DATA_POINT)
+		{
+			return EMPTY_DATA_POINT;
+		}
+
+		int id = getId(data);
+		int height = getHeight(data);
+		int bottomY = getBottomY(data);
+		int blockLight = getBlockLight(data);
+		int skyLight = getSkyLight(data);
+		validateData(id, height, bottomY, (byte) blockLight, (byte) skyLight);
+		if (height > LEGACY_Y_MASK || bottomY > LEGACY_Y_MASK)
+		{
+			throw new DataCorruptedException("Full datapoint cannot be represented by the legacy 12-bit Y layout: "+toString(data));
+		}
+
+		return (((long) id & LEGACY_ID_MASK) << LEGACY_ID_OFFSET)
+			| (long) height << LEGACY_HEIGHT_OFFSET
+			| (long) bottomY << LEGACY_MIN_Y_OFFSET
+			| (long) skyLight << LEGACY_SKY_LIGHT_OFFSET
+			| (long) blockLight << LEGACY_BLOCK_LIGHT_OFFSET;
+	}
 	
 	//endregion
 	

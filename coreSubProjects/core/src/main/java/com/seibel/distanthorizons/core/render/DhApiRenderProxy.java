@@ -140,6 +140,17 @@ public class DhApiRenderProxy implements IDhApiRenderProxy
 		return (activeTexture == -1) ? DhApiResult.createFail("DH's color texture hasn't been created and/or bound yet.", -1) : DhApiResult.createSuccess(activeTexture);
 	}
 	
+	/** Updated by the OpenGL atlas whenever its texture is created or replaced. */
+	public static int activeOpenGlDhBlockRatioAtlasTextureId = -1;
+	@Override
+	public DhApiResult<Integer> getDhBlockRatioAtlasTextureGlId()
+	{
+		int activeTexture = activeOpenGlDhBlockRatioAtlasTextureId;
+		return (activeTexture <= 0)
+			? DhApiResult.createFail("DH's block ratio atlas texture hasn't been created yet.", -1)
+			: DhApiResult.createSuccess(activeTexture);
+	}
+
 	
 	@Override 
 	public void setDeferTransparentRendering(boolean deferTransparentRendering) { this.deferTransparentRendering = deferTransparentRendering; }

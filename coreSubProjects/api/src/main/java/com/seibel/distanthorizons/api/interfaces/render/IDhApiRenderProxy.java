@@ -94,6 +94,20 @@ public interface IDhApiRenderProxy
 	 */
 	DhApiResult<Integer> getDhColorTextureId();
 	
+	/**
+	 * Returns the OpenGL name of Distant Horizons' block color-ratio atlas. <br>
+	 * Returns an unsuccessful result with payload -1 before the atlas is created
+	 * or when the active renderer does not provide an OpenGL atlas. <br>
+	 * Query this each render pass: growing the atlas can replace its texture ID.
+	 * A gray texel (128) preserves the LOD's base color.
+	 *
+	 * @apiNote Backported from API 7.1.0 for Iris compatibility in the Tellus fork.
+	 */
+	default DhApiResult<Integer> getDhBlockRatioAtlasTextureGlId()
+	{
+		return DhApiResult.createFail("DH's block ratio atlas texture is unavailable.", -1);
+	}
+
 	
 	
 	//======================//

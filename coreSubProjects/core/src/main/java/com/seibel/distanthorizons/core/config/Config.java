@@ -978,7 +978,6 @@ public class Config
 					.set(false)
 					.comment(""
 						+ "Automatically check for updates on game launch? \n"
-						+ "Disabled by default for the Tellus fork so it cannot be replaced with an incompatible upstream build. \n"
 						+ "")
 					.build();
 				

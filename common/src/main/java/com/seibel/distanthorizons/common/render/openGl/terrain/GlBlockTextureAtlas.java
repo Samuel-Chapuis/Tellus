@@ -22,6 +22,7 @@ package com.seibel.distanthorizons.common.render.openGl.terrain;
 import com.seibel.distanthorizons.common.wrappers.minecraft.MinecraftGLWrapper;
 import com.seibel.distanthorizons.core.dataObjects.render.textures.BlockTextureRegistry;
 import com.seibel.distanthorizons.core.render.AbstractBlockTextureAtlas;
+import com.seibel.distanthorizons.core.render.DhApiRenderProxy;
 import org.lwjgl.opengl.GL32;
 
 import java.nio.ByteBuffer;
@@ -70,29 +71,45 @@ public class GlBlockTextureAtlas extends AbstractBlockTextureAtlas
 	@Override 
 	protected void tryCreateOrResize(int width, int height)
 	{
-		if (this.textureId != 0)
+		int previousTexture = GL32.glGetInteger(GL32.GL_TEXTURE_BINDING_2D);
+		if (previousTexture == this.textureId)
 		{
-			GL32.glDeleteTextures(this.textureId);
+			// Do not restore the name of a texture that is about to be deleted.
+			previousTexture = 0;
 		}
+		DhApiRenderProxy.activeOpenGlDhBlockRatioAtlasTextureId = -1;
+		try
+		{
+			if (this.textureId != 0)
+			{
+				GL32.glDeleteTextures(this.textureId);
+			}
 		
-		this.textureId = GL32.glGenTextures();
-		GL32.glBindTexture(GL32.GL_TEXTURE_2D, this.textureId);
-		GL32.glTexImage2D(
-			GL32.GL_TEXTURE_2D, 0,
-			GL32.GL_RGBA8,
-			width, height, 
-			0,
-			GL32.GL_RGBA, GL32.GL_UNSIGNED_BYTE, 
-			(ByteBuffer) null
-		);
+			this.textureId = GL32.glGenTextures();
+			GL32.glBindTexture(GL32.GL_TEXTURE_2D, this.textureId);
+			GL32.glTexImage2D(
+				GL32.GL_TEXTURE_2D, 0,
+				GL32.GL_RGBA8,
+				width, height,
+				0,
+				GL32.GL_RGBA, GL32.GL_UNSIGNED_BYTE,
+				(ByteBuffer) null
+			);
 		
-		// nearest filtering keeps the blocky look and prevents
-		// texels bleeding between unrelated tiles on adjacent layers
-		GL32.glTexParameteri(GL32.GL_TEXTURE_2D, GL32.GL_TEXTURE_MIN_FILTER, GL32.GL_NEAREST);
-		GL32.glTexParameteri(GL32.GL_TEXTURE_2D, GL32.GL_TEXTURE_MAG_FILTER, GL32.GL_NEAREST);
-		GL32.glTexParameteri(GL32.GL_TEXTURE_2D, GL32.GL_TEXTURE_WRAP_S, GL32.GL_REPEAT);
-		GL32.glTexParameteri(GL32.GL_TEXTURE_2D, GL32.GL_TEXTURE_WRAP_T, GL32.GL_REPEAT);
-		GL32.glTexParameteri(GL32.GL_TEXTURE_2D, GL32.GL_TEXTURE_MAX_LEVEL, 0);
+			// nearest filtering keeps the blocky look and prevents
+			// texels bleeding between unrelated tiles on adjacent layers
+			GL32.glTexParameteri(GL32.GL_TEXTURE_2D, GL32.GL_TEXTURE_MIN_FILTER, GL32.GL_NEAREST);
+			GL32.glTexParameteri(GL32.GL_TEXTURE_2D, GL32.GL_TEXTURE_MAG_FILTER, GL32.GL_NEAREST);
+			GL32.glTexParameteri(GL32.GL_TEXTURE_2D, GL32.GL_TEXTURE_WRAP_S, GL32.GL_REPEAT);
+			GL32.glTexParameteri(GL32.GL_TEXTURE_2D, GL32.GL_TEXTURE_WRAP_T, GL32.GL_REPEAT);
+			GL32.glTexParameteri(GL32.GL_TEXTURE_2D, GL32.GL_TEXTURE_MAX_LEVEL, 0);
+			DhApiRenderProxy.activeOpenGlDhBlockRatioAtlasTextureId = this.textureId;
+		}
+		finally
+		{
+			// Allocation must not replace the lightmap or an Iris sampler binding.
+			GL32.glBindTexture(GL32.GL_TEXTURE_2D, previousTexture);
+		}
 	}
 	
 	//endregion

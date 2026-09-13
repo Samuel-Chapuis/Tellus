@@ -251,7 +251,14 @@ public class FullDataSourceV1
 				{
 					for (long dataPoint : dataColumn)
 					{
-						outputStream.writeLong(dataPoint);
+						try
+						{
+							outputStream.writeLong(FullDataPointUtil.toLegacyDataPoint(dataPoint));
+						}
+						catch (DataCorruptedException e)
+						{
+							throw new IOException(e);
+						}
 					}
 				}
 			}
@@ -321,7 +328,14 @@ public class FullDataSourceV1
 			{
 				for (int y = 0; y < dataPointArrays[xz].length; y++)
 				{
-					dataPointArrays[xz][y] = dataInputStream.readLong();
+					try
+					{
+						dataPointArrays[xz][y] = FullDataPointUtil.fromLegacyDataPoint(dataInputStream.readLong());
+					}
+					catch (DataCorruptedException e)
+					{
+						throw new IOException(e);
+					}
 				}
 			}
 		}

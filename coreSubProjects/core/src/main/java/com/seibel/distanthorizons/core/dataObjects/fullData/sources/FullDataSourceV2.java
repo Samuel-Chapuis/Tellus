@@ -379,20 +379,6 @@ public class FullDataSourceV2
 			return false;
 		}
 
-		boolean dataChanged = this.updateFromDataSourceWithoutFinalization(inputDataSource);
-		this.finalizeDataSourceUpdate(dataChanged);
-		return dataChanged;
-	}
-
-	/**
-	 * Creates a batch which can apply multiple inputs before running the whole-source
-	 * cleanup, occlusion, and hash passes. The returned batch must be closed.
-	 */
-	public UpdateBatch beginUpdateBatch() { return new UpdateBatch(); }
-
-	private boolean updateFromDataSourceWithoutFinalization(@NotNull FullDataSourceV2 inputDataSource)
-	{
-
 
 		byte thisDetailLevel = DhSectionPos.getDetailLevel(this.pos);
 		byte inputDetailLevel = DhSectionPos.getDetailLevel(inputDataSource.pos);
@@ -457,11 +443,6 @@ public class FullDataSourceV2
 		}
 
 
-		return dataChanged;
-	}
-
-	private void finalizeDataSourceUpdate(boolean dataChanged)
-	{
 		// needed to prevent infinite mapped ID growth
 		this.removeUnusedIdsAndRemap();
 
@@ -491,64 +472,8 @@ public class FullDataSourceV2
 			// update the hash code
 			this.generateHashCode();
 		}
-	}
 
-	/**
-	 * Applies multiple updates to this data source and finalizes them once on close.
-	 * This object is intentionally bound to its creating data source and is not
-	 * thread-safe, matching {@link FullDataSourceV2} itself.
-	 */
-	public final class UpdateBatch implements AutoCloseable
-	{
-		private boolean updateAttempted;
-		private boolean dataChanged;
-		private boolean closed;
-
-		private UpdateBatch() { }
-
-		public boolean updateFromDataSource(@NotNull FullDataSourceV2 inputDataSource)
-		{
-			if (this.closed)
-			{
-				throw new IllegalStateException("Cannot update a closed FullDataSourceV2 update batch.");
-			}
-			if (inputDataSource.mapping.isEmpty())
-			{
-				return false;
-			}
-
-			this.updateAttempted = true;
-			try
-			{
-				boolean changed = FullDataSourceV2.this.updateFromDataSourceWithoutFinalization(inputDataSource);
-				this.dataChanged |= changed;
-				return changed;
-			}
-			catch (RuntimeException | Error e)
-			{
-				// The update may have failed after changing one or more columns.
-				// Finalize conservatively when the batch closes.
-				this.dataChanged = true;
-				throw e;
-			}
-		}
-
-		public boolean hasDataChanged() { return this.dataChanged; }
-
-		@Override
-		public void close()
-		{
-			if (this.closed)
-			{
-				return;
-			}
-
-			this.closed = true;
-			if (this.updateAttempted)
-			{
-				FullDataSourceV2.this.finalizeDataSourceUpdate(this.dataChanged);
-			}
-		}
+		return dataChanged;
 	}
 
 	private boolean updateFromSameDetailLevel(FullDataSourceV2 inputDataSource, int[] remappedIds)
@@ -1153,7 +1078,6 @@ public class FullDataSourceV2
 				int inputIndex = relativePosToIndex(inputX, inputZ);
 
 
-
 				// data points //
 
 				// check if this column should be downsampled
@@ -1177,20 +1101,17 @@ public class FullDataSourceV2
 
 				if (downSampleColumn)
 				{
-					// world gen //
-
-					// a separate generation step needs to be used so can replace
-					// this data with higher-quality data when it is available
-					byte inputGenStep = EDhApiWorldGenerationStep.DOWN_SAMPLED.value;
-					this.columnGenerationSteps.set(recipientIndex, inputGenStep);
-
-
-					// world compression //
-					byte worldCompressionMode = inputDataSource.columnWorldCompressionMode.getByte(inputIndex);
-					this.columnWorldCompressionMode.set(recipientIndex, worldCompressionMode);
-
+					// Mark only columns that actually receive lower-detail data.
+					// Existing generated child columns must retain their metadata.
+					this.columnGenerationSteps.set(recipientIndex, EDhApiWorldGenerationStep.DOWN_SAMPLED.value);
+					this.columnWorldCompressionMode.set(
+						recipientIndex,
+						inputDataSource.columnWorldCompressionMode.getByte(inputIndex));
 
 					LongArrayList inputDataArray = inputDataSource.dataPoints[inputIndex];
+					// Parent and child data sources use independently pooled columns.
+					// Sharing this reference lets ID remapping mutate the parent and
+					// leaves child data pointing at storage that the parent later releases.
 					this.dataPoints[recipientIndex].clear();
 					this.dataPoints[recipientIndex].addAll(inputDataArray);
 					this.remapDataColumn(recipientIndex, remappedIds);
@@ -1469,8 +1390,7 @@ public class FullDataSourceV2
 				LodDataBuilder.validateOrThrowApiDataColumn(columnDataPoints);
 			}
 
-			LongArrayList packedDataPoints = LodDataBuilder.convertApiDataPointListToPackedLongArray(
-					columnDataPoints, this, 0, this.runApiSetterValidation);
+			LongArrayList packedDataPoints = LodDataBuilder.convertApiDataPointListToPackedLongArray(columnDataPoints, this, 0, true);
 
 			this.setSingleColumn(packedDataPoints, relX, relZ, EDhApiWorldGenerationStep.SURFACE, EDhApiWorldCompressionMode.MERGE_SAME_BLOCKS);
 

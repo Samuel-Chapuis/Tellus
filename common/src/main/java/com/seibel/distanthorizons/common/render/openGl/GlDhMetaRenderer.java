@@ -117,11 +117,17 @@ public class GlDhMetaRenderer implements IDhMetaRenderer
 		
 		this.bindLightmap(renderParams.lightmap);
 		
+		// Iris 1.11.4 queries the atlas before every LOD render pass, even when
+		// textured LODs are disabled. Tile zero supplies the neutral color ratio.
+		// Iris binds it to its own texture unit; only DH's shader uses our binding.
 		if (Config.Client.Advanced.Graphics.Texture.enableTexturedLods.get()
-			&& irisShadersInactive())
+			|| !irisShadersInactive())
 		{
 			GlBlockTextureAtlas.INSTANCE.uploadPendingTiles();
-			GlBlockTextureAtlas.INSTANCE.bind();
+			if (irisShadersInactive())
+			{
+				GlBlockTextureAtlas.INSTANCE.bind();
+			}
 		}
 	}
 	private void setGLState(

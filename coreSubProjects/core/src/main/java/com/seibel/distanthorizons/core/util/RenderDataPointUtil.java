@@ -45,16 +45,8 @@ import com.seibel.distanthorizons.coreapi.util.ColorUtil;
  * BL: block light <br>
  * SL: sky light <br>
  *
- * =======Bit layout=======	<br>
- * BM BM BM BM A  A  A  A  |	<br>
- * R  R  R  R  R  R  R  R  |	<br>
- * G  G  G  G  G  G  G  G  |	<br>
- * B  B  B  B  B  B  B  B  |	<br><br>
- *
- * H  H  H  H  H  H  H  H  |	<br>
- * H  H  H  H  D  D  D  D  |	<br>
- * D  D  D  D  D  D  D  D  |	<br>
- * BL BL BL BL SL SL SL SL |	<br>
+ * =======Bit layout (high to low)======= <br>
+ * BM: 4, A: 4, R: 7, G: 7, B: 6, H: 14, D: 14, BL: 4, SL: 4 <br>
  * </code>
  *
  * @see FullDataPointUtil
@@ -77,8 +69,8 @@ public class RenderDataPointUtil
 	public final static int GREEN_WIDTH = 7;
 	public final static int BLUE_WIDTH = 6;
 
-	// The Tellus fork uses 14-bit render Y coordinates so true-height worlds
-	// up to 16383 blocks tall can be represented without changing render-data size.
+	// Four color bits are reassigned to the two vertical fields so render-data
+	// points can represent worlds up to 16,383 blocks tall.
 	public final static int MAX_WORLD_Y_SIZE = 1 << Y_WIDTH;
 	
 	public final static int ALPHA_DOWNSIZE_SHIFT = 4;
@@ -210,17 +202,17 @@ public class RenderDataPointUtil
 	public static short getYMax(long dataPoint) { return (short) ((dataPoint >>> HEIGHT_SHIFT) & HEIGHT_MASK); }
 	/** AKA the starting/bottom/lowest Y value above {@link ILevelWrapper#getMinHeight()} */
 	public static short getYMin(long dataPoint) { return (short) ((dataPoint >>> DEPTH_SHIFT) & DEPTH_MASK); }
-	public static long setYMin(long dataPoint, int depth) { return (long) ((dataPoint & ~(DEPTH_MASK << DEPTH_SHIFT)) | (depth & DEPTH_MASK) << DEPTH_SHIFT); }
-	public static long setYMax(long dataPoint, int height) { return (long) ((dataPoint & ~(HEIGHT_MASK << HEIGHT_SHIFT)) | (height & HEIGHT_MASK) << HEIGHT_SHIFT); }
+	public static long setYMin(long dataPoint, int depth) { return (dataPoint & ~(DEPTH_MASK << DEPTH_SHIFT)) | ((long) depth & DEPTH_MASK) << DEPTH_SHIFT; }
+	public static long setYMax(long dataPoint, int height) { return (dataPoint & ~(HEIGHT_MASK << HEIGHT_SHIFT)) | ((long) height & HEIGHT_MASK) << HEIGHT_SHIFT; }
 	
 	public static short getAlpha(long dataPoint) { return (short) ((((dataPoint >>> ALPHA_SHIFT) & ALPHA_MASK) << ALPHA_DOWNSIZE_SHIFT) | 0b1111); }
 	public static short getRed(long dataPoint) { return (short) unpackColor((dataPoint >>> RED_SHIFT) & RED_MASK, RED_WIDTH); }
 	public static short getGreen(long dataPoint) { return (short) unpackColor((dataPoint >>> GREEN_SHIFT) & GREEN_MASK, GREEN_WIDTH); }
 	public static short getBlue(long dataPoint) { return (short) unpackColor((dataPoint >>> BLUE_SHIFT) & BLUE_MASK, BLUE_WIDTH); }
-	public static long setRed(long dataPoint, int red) { return (dataPoint & ~(RED_MASK << RED_SHIFT)) | ((long) packRed(red) << RED_SHIFT); }
-	public static long setGreen(long dataPoint, int green) { return (dataPoint & ~(GREEN_MASK << GREEN_SHIFT)) | ((long) packGreen(green) << GREEN_SHIFT); }
-	public static long setBlue(long dataPoint, int blue) { return (dataPoint & ~(BLUE_MASK << BLUE_SHIFT)) | ((long) packBlue(blue) << BLUE_SHIFT); }
-	public static long setAlpha(long dataPoint, int alpha) { return (dataPoint & ~(ALPHA_MASK << ALPHA_SHIFT)) | (((long) (alpha >>> ALPHA_DOWNSIZE_SHIFT) & ALPHA_MASK) << ALPHA_SHIFT); }
+	public static long setRed(long dataPoint, int red) { return (dataPoint & ~(RED_MASK << RED_SHIFT)) | (long) packRed(red) << RED_SHIFT; }
+	public static long setGreen(long dataPoint, int green) { return (dataPoint & ~(GREEN_MASK << GREEN_SHIFT)) | (long) packGreen(green) << GREEN_SHIFT; }
+	public static long setBlue(long dataPoint, int blue) { return (dataPoint & ~(BLUE_MASK << BLUE_SHIFT)) | (long) packBlue(blue) << BLUE_SHIFT; }
+	public static long setAlpha(long dataPoint, int alpha) { return (dataPoint & ~(ALPHA_MASK << ALPHA_SHIFT)) | ((long) (alpha >>> ALPHA_DOWNSIZE_SHIFT) & ALPHA_MASK) << ALPHA_SHIFT; }
 	
 	public static byte getLightSky(long dataPoint) { return (byte) ((dataPoint >>> SKY_LIGHT_SHIFT) & SKY_LIGHT_MASK); }
 	public static byte getLightBlock(long dataPoint) { return (byte) ((dataPoint >>> BLOCK_LIGHT_SHIFT) & BLOCK_LIGHT_MASK); }
