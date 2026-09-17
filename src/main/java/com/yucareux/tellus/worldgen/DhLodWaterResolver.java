@@ -1041,6 +1041,7 @@ public final class DhLodWaterResolver implements TellusCacheHandle {
       int maxBlockX = baseX + (lodSizePoints - 1) * cellSize + cellOffset + halfCell - 1;
       int maxBlockZ = baseZ + (lodSizePoints - 1) * cellSize + cellOffset + halfCell - 1;
       double worldScale = this.settings.worldScale();
+      int riverWidthExpansion = Mth.ceil(0.5 * (this.settings.riverWidthScale() - 1.0));
       long queryStartNs = OsmPerf.now();
       OsmQueryMode queryMode = this.settings.distantHorizonsOsmNonBlockingFetch() ? OsmQueryMode.NON_BLOCKING : OsmQueryMode.BLOCKING;
       TellusOsmWaterSource.WaterQueryResult result = this.osmWaterSource
@@ -1050,7 +1051,7 @@ public final class DhLodWaterResolver implements TellusCacheHandle {
             maxBlockX,
             maxBlockZ,
             worldScale,
-            WaterfallNoCarveZone.queryMarginBlocks(worldScale),
+            Math.max(WaterfallNoCarveZone.queryMarginBlocks(worldScale), riverWidthExpansion),
             queryMode,
             waterQueryTileBudget(cellSize)
          );
@@ -1061,7 +1062,7 @@ public final class DhLodWaterResolver implements TellusCacheHandle {
             maxBlockX,
             maxBlockZ,
             worldScale,
-            WaterfallNoCarveZone.queryMarginBlocks(worldScale),
+            Math.max(WaterfallNoCarveZone.queryMarginBlocks(worldScale), riverWidthExpansion),
             OsmQueryMode.BLOCKING,
             waterQueryTileBudget(cellSize)
          );
@@ -1189,7 +1190,8 @@ public final class DhLodWaterResolver implements TellusCacheHandle {
       double maxLatWorldZ = EarthProjection.latToBlockZ(feature.maxLat(), worldScale);
       double minWorldZ = Math.min(minLatWorldZ, maxLatWorldZ);
       double maxWorldZ = Math.max(minLatWorldZ, maxLatWorldZ);
-      int searchRadius = Math.max(cellSize >> 1, maxSampleOffset);
+      int riverWidthExpansion = Mth.ceil(0.5 * (this.settings.riverWidthScale() - 1.0));
+      int searchRadius = Math.max(cellSize >> 1, Math.max(maxSampleOffset, riverWidthExpansion));
       int minCellX = cellIndexForWorld(minWorldX - searchRadius, baseX, cellOffset, cellSize, lodSizePoints);
       int maxCellX = cellIndexForWorld(maxWorldX + searchRadius, baseX, cellOffset, cellSize, lodSizePoints);
       int minCellZ = cellIndexForWorld(minWorldZ - searchRadius, baseZ, cellOffset, cellSize, lodSizePoints);
@@ -1211,7 +1213,7 @@ public final class DhLodWaterResolver implements TellusCacheHandle {
             for (int offsetIndex = 0, sampleBit = 1; offsetIndex < sampleOffsets.length; offsetIndex += 2, sampleBit <<= 1) {
                int sampleX = worldX + sampleOffsets[offsetIndex];
                int sampleZ = worldZ + sampleOffsets[offsetIndex + 1];
-               if (feature.containsBlock(sampleX, sampleZ, worldScale)) {
+               if (feature.containsBlock(sampleX, sampleZ, worldScale, this.settings.riverWidthScale())) {
                   mask |= sampleBit;
                   if (feature.oceanHint()) {
                      oceanSample[index] = true;

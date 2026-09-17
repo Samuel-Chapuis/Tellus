@@ -74,6 +74,7 @@ public final class WaterSurfaceResolver implements TellusCacheHandle {
    private static final double RIVER_LAKE_ASPECT_FACTOR = 1.5;
    private static final double RIVER_LAKE_WIDTH_FACTOR = 0.75;
    private static final int RIVER_LAKE_MIN_WIDTH = 12;
+   private static final double RIVER_EXPANSION_MAX_SLOPE = Math.tan(Math.toRadians(20.0));
    private static final double BORDER_HEIGHT_PERCENTILE = 0.1;
    private static final double LAKE_SURFACE_HINT_PERCENTILE = 0.25;
    private static final int LAKE_MAX_TERRAIN_CUT = intProperty("tellus.water.lakeMaxTerrainCut", 12, 1, 64);
@@ -158,7 +159,13 @@ public final class WaterSurfaceResolver implements TellusCacheHandle {
       int rawRegionMargin = Math.max(
          this.maxDistanceToShore + SEA_LEVEL_TOLERANCE,
          this.osmWaterEnabled
-            ? Math.max(FLOW_CONTEXT_BLOCKS, WaterfallNoCarveZone.queryMarginBlocks(settings.worldScale()))
+            ? Math.max(
+               FLOW_CONTEXT_BLOCKS,
+               Math.max(
+                  WaterfallNoCarveZone.queryMarginBlocks(settings.worldScale()),
+                  riverWidthExpansionBlocks(settings.riverWidthScale())
+               )
+            )
             : 0
       );
       this.regionMargin = Math.min(rawRegionMargin, MAX_REGION_MARGIN_BLOCKS);
@@ -1863,7 +1870,10 @@ public final class WaterSurfaceResolver implements TellusCacheHandle {
             maxBlockX,
             maxBlockZ,
             this.settings.worldScale(),
-            WaterfallNoCarveZone.queryMarginBlocks(this.settings.worldScale()),
+            Math.max(
+               WaterfallNoCarveZone.queryMarginBlocks(this.settings.worldScale()),
+               riverWidthExpansionBlocks(this.settings.riverWidthScale())
+            ),
             OsmQueryMode.BLOCKING
          );
       OsmPerf.recordWaterQuery(OsmPerf.elapsedSince(queryStartNs), query.features().size());
@@ -1891,6 +1901,7 @@ public final class WaterSurfaceResolver implements TellusCacheHandle {
                   gridMinX,
                   gridMinZ,
                   gridSize,
+                  surfaceHeights,
                   blocksPerDegree,
                   baseWaterMask,
                   noDataMask,
@@ -1923,6 +1934,7 @@ public final class WaterSurfaceResolver implements TellusCacheHandle {
       int gridMinX,
       int gridMinZ,
       int gridSize,
+      int[] surfaceHeights,
       double blocksPerDegree,
       boolean[] baseWaterMask,
       boolean[] noDataMask,
@@ -1978,6 +1990,7 @@ public final class WaterSurfaceResolver implements TellusCacheHandle {
                   gridMinZ,
                   gridMaxX,
                   gridMaxZ,
+                  surfaceHeights,
                   baseWaterMask,
                   noDataMask,
                   oceanHintMask,
@@ -1986,6 +1999,8 @@ public final class WaterSurfaceResolver implements TellusCacheHandle {
                   feature.oceanHint(),
                   lineWaterGeometry,
                   feature.flowingWater(),
+                  feature.effectiveRiverWidthScale(this.settings.worldScale(), this.settings.riverWidthScale()),
+                  feature,
                   waterBodyKey,
                   waterBodySurfaceHint,
                   waterBodyKeys,
@@ -1995,41 +2010,80 @@ public final class WaterSurfaceResolver implements TellusCacheHandle {
             }
          }
       } else {
-         int clampedMinX = Math.max(gridMinX, minWorldX);
-         int clampedMaxX = Math.min(gridMaxX, maxWorldX);
-         int clampedMinZ = Math.max(gridMinZ, minWorldZ);
-         int clampedMaxZ = Math.min(gridMaxZ, maxWorldZ);
+         int riverExpansion = feature.flowingWater()
+            ? Mth.ceil(feature.riverWidthExpansionBlocks(this.settings.worldScale(), this.settings.riverWidthScale()))
+            : 0;
+         int clampedMinX = Math.max(gridMinX, minWorldX - riverExpansion);
+         int clampedMaxX = Math.min(gridMaxX, maxWorldX + riverExpansion);
+         int clampedMinZ = Math.max(gridMinZ, minWorldZ - riverExpansion);
+         int clampedMaxZ = Math.min(gridMaxZ, maxWorldZ + riverExpansion);
          if (clampedMaxX >= clampedMinX && clampedMaxZ >= clampedMinZ) {
-            ScanlinePolygonRasterizer.fill(
-               partXs,
-               partZs,
-               clampedMinX,
-               clampedMinZ,
-               clampedMaxX,
-               clampedMaxZ,
-               (worldX, worldZ) -> {
-                  this.markOsmWaterCell(
-                     worldX,
-                     worldZ,
-                     gridMinX,
-                     gridMinZ,
-                     gridSize,
-                     baseWaterMask,
-                     noDataMask,
-                     oceanHintMask,
-                     lineWaterMask,
-                     flowingWaterMask,
-                     feature.oceanHint(),
-                     false,
-                     feature.flowingWater(),
-                     waterBodyKey,
-                     waterBodySurfaceHint,
-                     waterBodyKeys,
-                     waterBodySurfaceHints
-                  );
-                  markOsmAreaWaterCell(worldX, worldZ, gridMinX, gridMinZ, gridSize, areaWaterMask);
+            if (feature.flowingWater()) {
+               for (int worldZ = clampedMinZ; worldZ <= clampedMaxZ; worldZ++) {
+                  for (int worldX = clampedMinX; worldX <= clampedMaxX; worldX++) {
+                     boolean originalFootprint = feature.containsBlock(worldX, worldZ, this.settings.worldScale());
+                     boolean scaledFootprint = feature.containsBlock(
+                        worldX, worldZ, this.settings.worldScale(), this.settings.riverWidthScale()
+                     );
+                     if (!scaledFootprint
+                        || !originalFootprint
+                           && !allowsRiverWidthExpansion(surfaceHeights, gridSize, worldX - gridMinX, worldZ - gridMinZ)) {
+                        continue;
+                     }
+                     this.markOsmWaterCell(
+                        worldX,
+                        worldZ,
+                        gridMinX,
+                        gridMinZ,
+                        gridSize,
+                        baseWaterMask,
+                        noDataMask,
+                        oceanHintMask,
+                        lineWaterMask,
+                        flowingWaterMask,
+                        feature.oceanHint(),
+                        false,
+                        true,
+                        waterBodyKey,
+                        waterBodySurfaceHint,
+                        waterBodyKeys,
+                        waterBodySurfaceHints
+                     );
+                     markOsmAreaWaterCell(worldX, worldZ, gridMinX, gridMinZ, gridSize, areaWaterMask);
+                  }
                }
-            );
+            } else {
+               ScanlinePolygonRasterizer.fill(
+                  partXs,
+                  partZs,
+                  clampedMinX,
+                  clampedMinZ,
+                  clampedMaxX,
+                  clampedMaxZ,
+                  (worldX, worldZ) -> {
+                     this.markOsmWaterCell(
+                        worldX,
+                        worldZ,
+                        gridMinX,
+                        gridMinZ,
+                        gridSize,
+                        baseWaterMask,
+                        noDataMask,
+                        oceanHintMask,
+                        lineWaterMask,
+                        flowingWaterMask,
+                        feature.oceanHint(),
+                        false,
+                        false,
+                        waterBodyKey,
+                        waterBodySurfaceHint,
+                        waterBodyKeys,
+                        waterBodySurfaceHints
+                     );
+                     markOsmAreaWaterCell(worldX, worldZ, gridMinX, gridMinZ, gridSize, areaWaterMask);
+                  }
+               );
+            }
          }
       }
    }
@@ -2043,6 +2097,7 @@ public final class WaterSurfaceResolver implements TellusCacheHandle {
       int gridMinZ,
       int gridMaxX,
       int gridMaxZ,
+      int[] surfaceHeights,
       boolean[] baseWaterMask,
       boolean[] noDataMask,
       boolean[] oceanHintMask,
@@ -2051,13 +2106,15 @@ public final class WaterSurfaceResolver implements TellusCacheHandle {
       boolean oceanHint,
       boolean lineWater,
       boolean flowingWater,
+      double riverWidthScale,
+      OsmWaterFeature feature,
       long waterBodyKey,
       int waterBodySurfaceHint,
       long[] waterBodyKeys,
       int[] waterBodySurfaceHints,
       int gridSize
    ) {
-      double halfWidth = 0.5;
+      double halfWidth = flowingWater ? 0.5 * riverWidthScale : 0.5;
       double maxDistanceSq = halfWidth * halfWidth + 1.0E-6;
       int minX = Math.max(gridMinX, Mth.floor(Math.min(startX, endX) - halfWidth - 1.0));
       int maxX = Math.min(gridMaxX, Mth.floor(Math.max(startX, endX) + halfWidth + 1.0));
@@ -2068,6 +2125,12 @@ public final class WaterSurfaceResolver implements TellusCacheHandle {
          for (int worldX = minX; worldX <= maxX; worldX++) {
             double distanceSq = distanceToSegmentSq(worldX, worldZ, startX, startZ, endX, endZ);
             if (!(distanceSq > maxDistanceSq)) {
+               boolean originalFootprint = feature.containsBlock(worldX, worldZ, this.settings.worldScale());
+               if (flowingWater
+                  && !originalFootprint
+                  && !allowsRiverWidthExpansion(surfaceHeights, gridSize, worldX - gridMinX, worldZ - gridMinZ)) {
+                  continue;
+               }
                this.markOsmWaterCell(
                   worldX,
                   worldZ,
@@ -3522,6 +3585,21 @@ public final class WaterSurfaceResolver implements TellusCacheHandle {
       double scale = Math.max(1.0E-4, this.settings.worldScale());
       int blocks = (int)Math.round(meters / scale);
       return Math.max(1, blocks);
+   }
+
+   private static int riverWidthExpansionBlocks(double riverWidthScale) {
+      return Math.max(0, Mth.ceil(0.5 * (riverWidthScale - 1.0)));
+   }
+
+   static boolean allowsRiverWidthExpansion(int[] surfaceHeights, int gridSize, int x, int z) {
+      if (x <= 0 || z <= 0 || x >= gridSize - 1 || z >= gridSize - 1) {
+         return false;
+      }
+
+      int index = z * gridSize + x;
+      double gradientX = (surfaceHeights[index + 1] - surfaceHeights[index - 1]) * 0.5;
+      double gradientZ = (surfaceHeights[index + gridSize] - surfaceHeights[index - gridSize]) * 0.5;
+      return Math.hypot(gradientX, gradientZ) <= RIVER_EXPANSION_MAX_SLOPE;
    }
 
    private static int clampBlend(int blocks) {

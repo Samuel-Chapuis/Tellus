@@ -18,6 +18,7 @@ import net.minecraft.world.level.dimension.DimensionType;
 
 public record EarthGeneratorSettings(
    double worldScale,
+   double riverWidthScale,
    double terrestrialHeightScale,
    double oceanicHeightScale,
    int heightOffset,
@@ -98,6 +99,8 @@ public record EarthGeneratorSettings(
    private static final double EVEREST_ELEVATION_METERS = 8848.0;
    private static final double MARIANA_TRENCH_METERS = -11034.0;
    public static final double MAX_WORLD_SCALE = 1000.0;
+   public static final double MIN_RIVER_WIDTH_SCALE = 1.0;
+   public static final double MAX_RIVER_WIDTH_SCALE = 10.0;
    private static final int MAX_VOXY_PREGEN_RADIUS = 1024;
    private static final int MAX_VOXY_PREGEN_CHUNKS_PER_TICK = 200;
    private static final int MAX_DH_OSM_DETAIL = 24;
@@ -112,6 +115,7 @@ public record EarthGeneratorSettings(
    public static final boolean DEFAULT_AUTOMATIC_HEIGHT_SCALING = true;
    public static final EarthGeneratorSettings DEFAULT = new EarthGeneratorSettings(
       30.0,
+      1.0,
       1.0,
       1.0,
       64,
@@ -333,6 +337,9 @@ public record EarthGeneratorSettings(
    private static final MapCodec<Boolean> HUGE_RED_MUSHROOMS_CODEC = Codec.BOOL
       .fieldOf("huge_red_mushrooms")
       .orElse(DEFAULT.hugeRedMushrooms());
+   private static final MapCodec<Double> RIVER_WIDTH_SCALE_CODEC = Codec.DOUBLE
+      .fieldOf("river_width_scale")
+      .orElse(DEFAULT.riverWidthScale());
    private static final MapCodec<Boolean> REALTIME_TIME_CODEC = Codec.BOOL.fieldOf("realtime_time").orElse(DEFAULT.realtimeTime());
    private static final MapCodec<Boolean> REALTIME_WEATHER_CODEC = Codec.BOOL.fieldOf("realtime_weather").orElse(DEFAULT.realtimeWeather());
    private static final MapCodec<Boolean> HISTORICAL_SNOW_CODEC = Codec.BOOL.fieldOf("historical_snow").orElse(DEFAULT.historicalSnow());
@@ -445,7 +452,8 @@ public record EarthGeneratorSettings(
             builder = EarthGeneratorSettings.CAVES_REACH_SURFACE_CODEC.encode(input.cavesReachSurface(), ops, builder);
             builder = EarthGeneratorSettings.UNDERGROUND_DEPTH_CODEC.encode(input.undergroundDepth(), ops, builder);
             builder = EarthGeneratorSettings.CUSTOM_TREES_CODEC.encode(input.customTrees(), ops, builder);
-            return EarthGeneratorSettings.HUGE_RED_MUSHROOMS_CODEC.encode(input.hugeRedMushrooms(), ops, builder);
+            builder = EarthGeneratorSettings.HUGE_RED_MUSHROOMS_CODEC.encode(input.hugeRedMushrooms(), ops, builder);
+            return EarthGeneratorSettings.RIVER_WIDTH_SCALE_CODEC.encode(input.riverWidthScale(), ops, builder);
          }
 
          public <T> Stream<T> keys(DynamicOps<T> ops) {
@@ -483,6 +491,7 @@ public record EarthGeneratorSettings(
             baseKeys = Stream.concat(baseKeys, EarthGeneratorSettings.UNDERGROUND_DEPTH_CODEC.keys(ops));
             baseKeys = Stream.concat(baseKeys, EarthGeneratorSettings.CUSTOM_TREES_CODEC.keys(ops));
             baseKeys = Stream.concat(baseKeys, EarthGeneratorSettings.HUGE_RED_MUSHROOMS_CODEC.keys(ops));
+            baseKeys = Stream.concat(baseKeys, EarthGeneratorSettings.RIVER_WIDTH_SCALE_CODEC.keys(ops));
             Stream<T> structureKeys = Stream.concat(baseKeys, EarthGeneratorSettings.STRUCTURE_CODEC.keys(ops));
             return Stream.concat(structureKeys, EarthGeneratorSettings.TRAIL_RUINS_CODEC.keys(ops));
          }
@@ -516,6 +525,7 @@ public record EarthGeneratorSettings(
             DataResult<Integer> undergroundDepth = EarthGeneratorSettings.UNDERGROUND_DEPTH_CODEC.decode(ops, input);
             DataResult<Boolean> customTrees = EarthGeneratorSettings.CUSTOM_TREES_CODEC.decode(ops, input);
             DataResult<Boolean> hugeRedMushrooms = EarthGeneratorSettings.HUGE_RED_MUSHROOMS_CODEC.decode(ops, input);
+            DataResult<Double> riverWidthScale = EarthGeneratorSettings.RIVER_WIDTH_SCALE_CODEC.decode(ops, input);
             DataResult<Boolean> experimentalIncreaseHeight = EarthGeneratorSettings.EXPERIMENTAL_INCREASE_HEIGHT_CODEC.decode(ops, input);
             DataResult<Boolean> automaticHeightScaling = EarthGeneratorSettings.AUTOMATIC_HEIGHT_SCALING_CODEC.decode(ops, input);
             DataResult<Optional<String>> experimentalHeightCoordinateProfile = EarthGeneratorSettings.EXPERIMENTAL_HEIGHT_COORDINATE_PROFILE_CODEC
@@ -596,7 +606,8 @@ public record EarthGeneratorSettings(
             DataResult<EarthGeneratorSettings> withCustomTrees = withUndergroundDepth.apply2(
                EarthGeneratorSettings::applyCustomTrees, customTrees
             );
-            return withCustomTrees.apply2(EarthGeneratorSettings::applyHugeRedMushrooms, hugeRedMushrooms);
+            DataResult<EarthGeneratorSettings> withHugeRedMushrooms = withCustomTrees.apply2(EarthGeneratorSettings::applyHugeRedMushrooms, hugeRedMushrooms);
+            return withHugeRedMushrooms.apply2(EarthGeneratorSettings::applyRiverWidthScale, riverWidthScale);
          }
 
          public <T> Stream<T> keys(DynamicOps<T> ops) {
@@ -643,6 +654,7 @@ public record EarthGeneratorSettings(
 
    public EarthGeneratorSettings(
       double worldScale,
+      double riverWidthScale,
       double terrestrialHeightScale,
       double oceanicHeightScale,
       int heightOffset,
@@ -708,6 +720,7 @@ public record EarthGeneratorSettings(
       boolean hugeRedMushrooms
    ) {
       worldScale = clampWorldScale(worldScale);
+      riverWidthScale = Mth.clamp(riverWidthScale, MIN_RIVER_WIDTH_SCALE, MAX_RIVER_WIDTH_SCALE);
       randomBiomeDensity = Mth.clamp(randomBiomeDensity, MIN_RANDOM_BIOME_DENSITY, MAX_RANDOM_BIOME_DENSITY);
       randomBiomeIds = MinecraftVersionCompat.normalizeRandomBiomeSelection(randomBiomeIds);
       voxyChunkPregenMaxRadius = Mth.clamp(voxyChunkPregenMaxRadius, 0, MAX_VOXY_PREGEN_RADIUS);
@@ -726,6 +739,7 @@ public record EarthGeneratorSettings(
       distantHorizonsOsmBuildingMaxDetail = FIXED_DH_OSM_BUILDING_MAX_DETAIL;
       distantHorizonsOsmNonBlockingFetch = FIXED_DH_OSM_NON_BLOCKING_FETCH;
       this.worldScale = worldScale;
+      this.riverWidthScale = riverWidthScale;
       this.terrestrialHeightScale = terrestrialHeightScale;
       this.oceanicHeightScale = oceanicHeightScale;
       this.heightOffset = heightOffset;
@@ -1036,13 +1050,37 @@ public record EarthGeneratorSettings(
       return settings.withHugeRedMushrooms(Objects.requireNonNull(hugeRedMushrooms, "hugeRedMushrooms"));
    }
 
+   private static EarthGeneratorSettings applyRiverWidthScale(EarthGeneratorSettings settings, Double riverWidthScale) {
+      return settings.withRiverWidthScale(Objects.requireNonNull(riverWidthScale, "riverWidthScale"));
+   }
+
+   public EarthGeneratorSettings withRiverWidthScale(double riverWidthScale) {
+      return new EarthGeneratorSettings(
+         this.worldScale, riverWidthScale, this.terrestrialHeightScale, this.oceanicHeightScale, this.heightOffset,
+         this.spawnLatitude, this.spawnLongitude, this.minAltitude, this.maxAltitude,
+         this.riverLakeShorelineBlend, this.oceanShorelineBlend, this.shorelineBlendCliffLimit, this.caveGeneration, this.oreDistribution, this.geologicalStonePatches, this.lavaPools,
+         this.addStrongholds, this.addVillages, this.addMineshafts, this.addOceanMonuments, this.addWoodlandMansions,
+         this.addDesertTemples, this.addJungleTemples, this.addPillagerOutposts, this.addRuinedPortals, this.addShipwrecks,
+         this.addOceanRuins, this.addBuriedTreasure, this.addIgloos, this.addWitchHuts, this.addAncientCities,
+         this.addTrialChambers, this.addTrailRuins, this.deepDark, this.geodes, this.distantHorizonsWaterResolver,
+         this.distantHorizonsOsmFeatures, this.distantHorizonsOsmRoadMaxDetail, this.distantHorizonsOsmBuildingMaxDetail,
+         this.distantHorizonsOsmNonBlockingFetch, this.realtimeTime, this.realtimeWeather, this.historicalSnow,
+         this.voxyChunkPregenEnabled, this.voxyChunkPregenMaxRadius, this.voxyChunkPregenChunksPerTick,
+         this.distantHorizonsRenderMode, this.demSelection, this.enableRoads, this.enableBuildings, this.enableWater,
+         this.thinShellTerrain, this.climateBasedBuiltUpTerrain, this.randomBiomes, this.randomBiomeDensity,
+         this.randomBiomeSeed, this.randomBiomeIds, this.experimentalIncreaseHeight, this.tellusManagedTerrainDownloads,
+         this.showTerrainDownloadOverlay, this.cavesReachSurface, this.undergroundDepth, this.customTrees,
+         this.automaticHeightScaling, this.hugeRedMushrooms
+      );
+   }
+
    public EarthGeneratorSettings withNetworkSettings(boolean managedTerrainDownloads, boolean showOverlay) {
       return this.withNetworkSettings(managedTerrainDownloads, showOverlay, this.cavesReachSurface);
    }
 
    private EarthGeneratorSettings withNetworkSettings(boolean managedTerrainDownloads, boolean showOverlay, boolean cavesReachSurface) {
       return new EarthGeneratorSettings(
-         this.worldScale, this.terrestrialHeightScale, this.oceanicHeightScale, this.heightOffset,
+         this.worldScale, this.riverWidthScale, this.terrestrialHeightScale, this.oceanicHeightScale, this.heightOffset,
          this.spawnLatitude, this.spawnLongitude, this.minAltitude, this.maxAltitude,
          this.riverLakeShorelineBlend, this.oceanShorelineBlend, this.shorelineBlendCliffLimit, this.caveGeneration, this.oreDistribution, this.geologicalStonePatches, this.lavaPools,
          this.addStrongholds, this.addVillages, this.addMineshafts, this.addOceanMonuments, this.addWoodlandMansions,
@@ -1063,7 +1101,7 @@ public record EarthGeneratorSettings(
 
    public EarthGeneratorSettings withUndergroundDepth(int undergroundDepth) {
       return new EarthGeneratorSettings(
-         this.worldScale, this.terrestrialHeightScale, this.oceanicHeightScale, this.heightOffset,
+         this.worldScale, this.riverWidthScale, this.terrestrialHeightScale, this.oceanicHeightScale, this.heightOffset,
          this.spawnLatitude, this.spawnLongitude, this.minAltitude, this.maxAltitude,
          this.riverLakeShorelineBlend, this.oceanShorelineBlend, this.shorelineBlendCliffLimit, this.caveGeneration, this.oreDistribution, this.geologicalStonePatches, this.lavaPools,
          this.addStrongholds, this.addVillages, this.addMineshafts, this.addOceanMonuments, this.addWoodlandMansions,
@@ -1084,7 +1122,7 @@ public record EarthGeneratorSettings(
 
    public EarthGeneratorSettings withCustomTrees(boolean customTrees) {
       return new EarthGeneratorSettings(
-         this.worldScale, this.terrestrialHeightScale, this.oceanicHeightScale, this.heightOffset,
+         this.worldScale, this.riverWidthScale, this.terrestrialHeightScale, this.oceanicHeightScale, this.heightOffset,
          this.spawnLatitude, this.spawnLongitude, this.minAltitude, this.maxAltitude,
          this.riverLakeShorelineBlend, this.oceanShorelineBlend, this.shorelineBlendCliffLimit, this.caveGeneration, this.oreDistribution, this.geologicalStonePatches, this.lavaPools,
          this.addStrongholds, this.addVillages, this.addMineshafts, this.addOceanMonuments, this.addWoodlandMansions,
@@ -1103,7 +1141,7 @@ public record EarthGeneratorSettings(
 
    public EarthGeneratorSettings withHugeRedMushrooms(boolean hugeRedMushrooms) {
       return new EarthGeneratorSettings(
-         this.worldScale, this.terrestrialHeightScale, this.oceanicHeightScale, this.heightOffset,
+         this.worldScale, this.riverWidthScale, this.terrestrialHeightScale, this.oceanicHeightScale, this.heightOffset,
          this.spawnLatitude, this.spawnLongitude, this.minAltitude, this.maxAltitude,
          this.riverLakeShorelineBlend, this.oceanShorelineBlend, this.shorelineBlendCliffLimit, this.caveGeneration, this.oreDistribution, this.geologicalStonePatches, this.lavaPools,
          this.addStrongholds, this.addVillages, this.addMineshafts, this.addOceanMonuments, this.addWoodlandMansions,
@@ -1136,6 +1174,7 @@ public record EarthGeneratorSettings(
    private EarthGeneratorSettings withStructureSettings(EarthGeneratorSettings.StructureSettings structures) {
       return new EarthGeneratorSettings(
          this.worldScale,
+         this.riverWidthScale,
          this.terrestrialHeightScale,
          this.oceanicHeightScale,
          this.heightOffset,
@@ -1217,6 +1256,7 @@ public record EarthGeneratorSettings(
    private EarthGeneratorSettings withTrailRuins(boolean addTrailRuins) {
       return new EarthGeneratorSettings(
          this.worldScale,
+         this.riverWidthScale,
          this.terrestrialHeightScale,
          this.oceanicHeightScale,
          this.heightOffset,
@@ -1286,6 +1326,7 @@ public record EarthGeneratorSettings(
    private EarthGeneratorSettings withDeepDark(boolean deepDark) {
       return new EarthGeneratorSettings(
          this.worldScale,
+         this.riverWidthScale,
          this.terrestrialHeightScale,
          this.oceanicHeightScale,
          this.heightOffset,
@@ -1355,6 +1396,7 @@ public record EarthGeneratorSettings(
    private EarthGeneratorSettings withGeodes(boolean geodes) {
       return new EarthGeneratorSettings(
          this.worldScale,
+         this.riverWidthScale,
          this.terrestrialHeightScale,
          this.oceanicHeightScale,
          this.heightOffset,
@@ -1424,6 +1466,7 @@ public record EarthGeneratorSettings(
    private EarthGeneratorSettings withDistantHorizonsOsmRoadMaxDetail(int maxDetail) {
       return new EarthGeneratorSettings(
          this.worldScale,
+         this.riverWidthScale,
          this.terrestrialHeightScale,
          this.oceanicHeightScale,
          this.heightOffset,
@@ -1493,6 +1536,7 @@ public record EarthGeneratorSettings(
    private EarthGeneratorSettings withDistantHorizonsOsmBuildingMaxDetail(int maxDetail) {
       return new EarthGeneratorSettings(
          this.worldScale,
+         this.riverWidthScale,
          this.terrestrialHeightScale,
          this.oceanicHeightScale,
          this.heightOffset,
@@ -1562,6 +1606,7 @@ public record EarthGeneratorSettings(
    private EarthGeneratorSettings withDistantHorizonsOsmNonBlockingFetch(boolean nonBlockingFetch) {
       return new EarthGeneratorSettings(
          this.worldScale,
+         this.riverWidthScale,
          this.terrestrialHeightScale,
          this.oceanicHeightScale,
          this.heightOffset,
@@ -1631,6 +1676,7 @@ public record EarthGeneratorSettings(
    private EarthGeneratorSettings withEnableRoads(boolean enableRoads) {
       return new EarthGeneratorSettings(
          this.worldScale,
+         this.riverWidthScale,
          this.terrestrialHeightScale,
          this.oceanicHeightScale,
          this.heightOffset,
@@ -1700,6 +1746,7 @@ public record EarthGeneratorSettings(
    private EarthGeneratorSettings withEnableBuildings(boolean enableBuildings) {
       return new EarthGeneratorSettings(
          this.worldScale,
+         this.riverWidthScale,
          this.terrestrialHeightScale,
          this.oceanicHeightScale,
          this.heightOffset,
@@ -1769,6 +1816,7 @@ public record EarthGeneratorSettings(
    private EarthGeneratorSettings withEnableWater(boolean enableWater) {
       return new EarthGeneratorSettings(
          this.worldScale,
+         this.riverWidthScale,
          this.terrestrialHeightScale,
          this.oceanicHeightScale,
          this.heightOffset,
@@ -1838,6 +1886,7 @@ public record EarthGeneratorSettings(
    private EarthGeneratorSettings withThinShellTerrain(boolean thinShellTerrain) {
       return new EarthGeneratorSettings(
          this.worldScale,
+         this.riverWidthScale,
          this.terrestrialHeightScale,
          this.oceanicHeightScale,
          this.heightOffset,
@@ -1907,6 +1956,7 @@ public record EarthGeneratorSettings(
    private EarthGeneratorSettings withClimateBasedBuiltUpTerrain(boolean climateBasedBuiltUpTerrain) {
       return new EarthGeneratorSettings(
          this.worldScale,
+         this.riverWidthScale,
          this.terrestrialHeightScale,
          this.oceanicHeightScale,
          this.heightOffset,
@@ -1994,6 +2044,7 @@ public record EarthGeneratorSettings(
    ) {
       return new EarthGeneratorSettings(
          this.worldScale,
+         this.riverWidthScale,
          this.terrestrialHeightScale,
          this.oceanicHeightScale,
          this.heightOffset,
@@ -2098,6 +2149,7 @@ public record EarthGeneratorSettings(
    private EarthGeneratorSettings withExperimentalIncreaseHeight(boolean experimentalIncreaseHeight) {
       return new EarthGeneratorSettings(
          this.worldScale,
+         this.riverWidthScale,
          this.terrestrialHeightScale,
          this.oceanicHeightScale,
          this.heightOffset,
@@ -2167,6 +2219,7 @@ public record EarthGeneratorSettings(
    private EarthGeneratorSettings withAutomaticHeightScaling(boolean automaticHeightScaling) {
       return new EarthGeneratorSettings(
          this.worldScale,
+         this.riverWidthScale,
          this.terrestrialHeightScale,
          this.oceanicHeightScale,
          this.heightOffset,
@@ -2871,6 +2924,7 @@ public record EarthGeneratorSettings(
       private EarthGeneratorSettings toSettings() {
       return new EarthGeneratorSettings(
          this.worldScale,
+         EarthGeneratorSettings.DEFAULT.riverWidthScale(),
          this.terrestrialHeightScale,
          this.oceanicHeightScale,
          this.heightOffset,

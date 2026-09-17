@@ -2297,7 +2297,8 @@ public final class TerrainPreview implements AutoCloseable {
             waterKind,
             lineWaterMask,
             areaWaterMask,
-            flowingWaterMask
+            flowingWaterMask,
+            settings.riverWidthScale()
          )) {
             return false;
          }
@@ -2917,7 +2918,8 @@ public final class TerrainPreview implements AutoCloseable {
       byte[] waterKind,
       boolean[] lineWaterMask,
       boolean[] areaWaterMask,
-      boolean[] flowingWaterMask
+      boolean[] flowingWaterMask,
+      double riverWidthScale
    ) {
       byte kind = (byte)(feature.oceanHint() ? 2 : 1);
       return feature.lineGeometry()
@@ -2935,12 +2937,15 @@ public final class TerrainPreview implements AutoCloseable {
             size,
             waterKind,
             lineWaterMask,
-            flowingWaterMask
+            flowingWaterMask,
+            riverWidthScale
          )
          : this.rasterizeWaterPreviewPolygonFeature(
             requestId,
             feature,
             kind,
+            sampleWorldX,
+            sampleWorldZ,
             sampleLon,
             sampleLat,
             blocksPerDegree,
@@ -2952,7 +2957,8 @@ public final class TerrainPreview implements AutoCloseable {
             waterKind,
             lineWaterMask,
             areaWaterMask,
-            flowingWaterMask
+            flowingWaterMask,
+            riverWidthScale
          );
    }
 
@@ -2960,6 +2966,8 @@ public final class TerrainPreview implements AutoCloseable {
       int requestId,
       OsmWaterFeature feature,
       byte kind,
+      double[] sampleWorldX,
+      double[] sampleWorldZ,
       double[] sampleLon,
       double[] sampleLat,
       double blocksPerDegree,
@@ -2971,18 +2979,23 @@ public final class TerrainPreview implements AutoCloseable {
       byte[] waterKind,
       boolean[] lineWaterMask,
       boolean[] areaWaterMask,
-      boolean[] flowingWaterMask
+      boolean[] flowingWaterMask,
+      double riverWidthScale
    ) {
+      double previewRiverWidthScale = 1.0 + (riverWidthScale - 1.0) * Math.max(1.0, step * 1.1);
+      double previewExpansion = feature.flowingWater()
+         ? Math.max(0.5, feature.riverWidthExpansionBlocks(worldScale, previewRiverWidthScale))
+         : 0.0;
       double minBlockX = feature.minLon() * blocksPerDegree;
       double maxBlockX = feature.maxLon() * blocksPerDegree;
       double z0 = EarthProjection.latToBlockZ(feature.minLat(), worldScale);
       double z1 = EarthProjection.latToBlockZ(feature.maxLat(), worldScale);
       double minBlockZ = Math.min(z0, z1);
       double maxBlockZ = Math.max(z0, z1);
-      int minGridX = (int)Math.floor((minBlockX - minWorldX) / step) - 1;
-      int maxGridX = (int)Math.ceil((maxBlockX - minWorldX) / step) + 1;
-      int minGridZ = (int)Math.floor((minBlockZ - minWorldZ) / step) - 1;
-      int maxGridZ = (int)Math.ceil((maxBlockZ - minWorldZ) / step) + 1;
+      int minGridX = (int)Math.floor((minBlockX - previewExpansion - minWorldX) / step) - 1;
+      int maxGridX = (int)Math.ceil((maxBlockX + previewExpansion - minWorldX) / step) + 1;
+      int minGridZ = (int)Math.floor((minBlockZ - previewExpansion - minWorldZ) / step) - 1;
+      int maxGridZ = (int)Math.ceil((maxBlockZ + previewExpansion - minWorldZ) / step) + 1;
       if (maxGridX < 0 || maxGridZ < 0 || minGridX >= size || minGridZ >= size) {
          return true;
       }
@@ -3001,7 +3014,11 @@ public final class TerrainPreview implements AutoCloseable {
          int row = gz * size;
 
          for (int gx = minGridX; gx <= maxGridX; gx++) {
-            if (feature.containsLonLat(sampleLon[gx], lat)) {
+            if (feature.containsLonLat(sampleLon[gx], lat)
+               || feature.flowingWater()
+                  && feature.containsWorldPosition(
+                     sampleWorldX[gx], sampleWorldZ[gz], worldScale, previewRiverWidthScale
+                  )) {
                markWaterPreviewCell(
                   waterKind,
                   lineWaterMask,
@@ -3035,9 +3052,12 @@ public final class TerrainPreview implements AutoCloseable {
       int size,
       byte[] waterKind,
       boolean[] lineWaterMask,
-      boolean[] flowingWaterMask
+      boolean[] flowingWaterMask,
+      double riverWidthScale
    ) {
-      double halfWidth = Math.max(0.5, step * 0.55);
+      double previewRiverWidthScale = 1.0 + (riverWidthScale - 1.0) * Math.max(1.0, step * 1.1);
+      double halfWidth = Math.max(0.5, step * 0.55)
+         * (feature.flowingWater() ? feature.effectiveRiverWidthScale(worldScale, previewRiverWidthScale) : 1.0);
       double radiusSq = halfWidth * halfWidth + 1.0E-6;
 
       for (int part = 0; part < feature.partCount(); part++) {

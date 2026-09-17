@@ -453,6 +453,7 @@ public class EarthCustomizeScreen extends Screen {
    
    private EarthGeneratorSettings buildSettings() {
       double worldScale = this.findSliderValue("world_scale", EarthGeneratorSettings.DEFAULT.worldScale());
+      double riverWidthScale = this.findSliderValue("river_width_scale", EarthGeneratorSettings.DEFAULT.riverWidthScale());
       EarthGeneratorSettings.DemSelection demSelection = this.buildDemSelection();
       boolean experimentalIncreaseHeight = this.findToggleValue(
          "experimental_increase_height", EarthGeneratorSettings.DEFAULT.experimentalIncreaseHeight()
@@ -549,6 +550,7 @@ public class EarthCustomizeScreen extends Screen {
 
       return new EarthGeneratorSettings(
          worldScale,
+         riverWidthScale,
          terrestrialScale,
          oceanicScale,
          heightOffset,
@@ -643,6 +645,7 @@ public class EarthCustomizeScreen extends Screen {
       }
 
       this.setSliderValue("world_scale", initialSettings.worldScale());
+      this.setSliderValue("river_width_scale", initialSettings.riverWidthScale());
       this.setSliderValue("underground_depth", initialSettings.undergroundDepth());
       this.setDemSelectionValue(initialSettings.demSelection());
       this.setSliderValue("terrestrial_height_scale", initialSettings.terrestrialHeightScale());
@@ -792,6 +795,13 @@ public class EarthCustomizeScreen extends Screen {
             slider("world_scale", 30.0, 1.0, EarthGeneratorSettings.MAX_WORLD_SCALE, 5.0)
                .withDisplay(EarthCustomizeScreen::formatWorldScale)
                .withScale(EarthCustomizeScreen.SliderScale.power(3.0)),
+            slider(
+               "river_width_scale",
+               EarthGeneratorSettings.DEFAULT.riverWidthScale(),
+               EarthGeneratorSettings.MIN_RIVER_WIDTH_SCALE,
+               EarthGeneratorSettings.MAX_RIVER_WIDTH_SCALE,
+               0.25
+            ).withDisplay(EarthCustomizeScreen::formatMultiplier),
             new AutoAdjustDefinition(),
             toggle("automatic_height_scaling", EarthGeneratorSettings.DEFAULT.automaticHeightScaling()),
             toggle("experimental_increase_height", EarthGeneratorSettings.DEFAULT.experimentalIncreaseHeight())

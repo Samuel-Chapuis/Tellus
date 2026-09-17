@@ -297,6 +297,22 @@ class EarthGeneratorSettingsCodecTest {
       assertEquals(6, encodedObject.get("river_lake_shoreline_blend").getAsInt());
    }
 
+   @Test
+   void persistsRiverWidthScaleAndClampsInvalidValues() {
+      EarthGeneratorSettings decoded = requireSuccess(
+         EarthGeneratorSettings.CODEC.parse(JsonOps.INSTANCE, JsonParser.parseString("{\"river_width_scale\":3.25}"))
+      );
+      assertEquals(3.25, decoded.riverWidthScale());
+
+      EarthGeneratorSettings clamped = requireSuccess(
+         EarthGeneratorSettings.CODEC.parse(JsonOps.INSTANCE, JsonParser.parseString("{\"river_width_scale\":99.0}"))
+      );
+      assertEquals(EarthGeneratorSettings.MAX_RIVER_WIDTH_SCALE, clamped.riverWidthScale());
+
+      JsonObject encoded = requireSuccess(EarthGeneratorSettings.CODEC.encodeStart(JsonOps.INSTANCE, decoded)).getAsJsonObject();
+      assertEquals(3.25, encoded.get("river_width_scale").getAsDouble());
+   }
+
    private static JsonElement loadFixture(String path) throws IOException {
       try (InputStream stream = EarthGeneratorSettingsCodecTest.class.getClassLoader().getResourceAsStream(path)) {
          assertNotNull(stream, "Missing fixture " + path);

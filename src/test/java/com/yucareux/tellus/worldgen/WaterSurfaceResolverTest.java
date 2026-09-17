@@ -106,6 +106,16 @@ class WaterSurfaceResolverTest {
    }
 
    @Test
+   void onlyExpandsRiversAcrossGentleTerrain() {
+      int[] flat = new int[25];
+      int[] slope = new int[]{0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1, 2, 3, 4};
+
+      assertTrue(WaterSurfaceResolver.allowsRiverWidthExpansion(flat, 5, 2, 2));
+      assertFalse(WaterSurfaceResolver.allowsRiverWidthExpansion(slope, 5, 2, 2));
+      assertFalse(WaterSurfaceResolver.allowsRiverWidthExpansion(flat, 5, 0, 2));
+   }
+
+   @Test
    void polygonRiversDoNotUseDirectLineWaterMask() {
       OsmWaterFeature polygonRiver = new OsmWaterFeature(
          1L,

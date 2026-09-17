@@ -5,6 +5,7 @@ import java.util.Objects;
 
 public final class OsmWaterFeature {
    private static final double LINE_HALF_WIDTH_BLOCKS = 0.5;
+   private static final double WIDTH_RESPONSE_REFERENCE_BLOCKS = 4.0;
    private final long featureId;
    private final boolean lineGeometry;
    private final boolean pointGeometry;
@@ -16,6 +17,7 @@ public final class OsmWaterFeature {
    private final double maxLon;
    private final double minLat;
    private final double maxLat;
+   private final double riverWidthAtScaleOne;
 
    public OsmWaterFeature(long featureId, boolean lineGeometry, boolean oceanHint, double[][] longitudes, double[][] latitudes) {
       this(featureId, lineGeometry, oceanHint, OsmWaterKind.UNKNOWN, longitudes, latitudes);
@@ -76,6 +78,7 @@ public final class OsmWaterFeature {
          this.maxLon = highLon;
          this.minLat = lowLat;
          this.maxLat = highLat;
+         this.riverWidthAtScaleOne = this.lineGeometry || this.pointGeometry ? 1.0 : this.estimatePolygonWidthAtScaleOne();
       }
    }
 
@@ -156,18 +159,57 @@ public final class OsmWaterFeature {
    }
 
    public boolean containsBlock(int blockX, int blockZ, double worldScale) {
+      return this.containsBlock(blockX, blockZ, worldScale, 1.0);
+   }
+
+   public boolean containsBlock(int blockX, int blockZ, double worldScale, double riverWidthScale) {
+      return this.containsWorldPosition(blockX, blockZ, worldScale, riverWidthScale);
+   }
+
+   /**
+    * Tests a world-space position against this water feature. Flowing polygon
+    * features receive the same lateral expansion as line rivers, so Overture's
+    * {@code riverbank} polygons respond to the river width setting as well.
+    */
+   public boolean containsWorldPosition(double blockX, double blockZ, double worldScale, double riverWidthScale) {
       if (worldScale <= 0.0) {
          return false;
       } else if (this.pointGeometry) {
          return false;
       } else if (this.lineGeometry) {
-         return this.touchesBlockLine(blockX, blockZ, worldScale);
+         return this.touchesBlockLine(blockX, blockZ, worldScale, this.effectiveRiverWidthScale(worldScale, riverWidthScale));
       } else {
          double blocksPerDegree = EarthProjection.blocksPerDegree(worldScale);
-         double lon = blockX / blocksPerDegree;
-         double lat = EarthProjection.blockZToLat(blockZ, worldScale);
-         return this.containsLonLat(lon, lat);
+         double longitude = blockX / blocksPerDegree;
+         double latitude = EarthProjection.blockZToLat(blockZ, worldScale);
+         return this.containsLonLat(longitude, latitude)
+            || this.flowingWater() && this.touchesBlockPolygon(blockX, blockZ, worldScale, riverWidthScale);
       }
+   }
+
+   /**
+    * Converts the user-selected maximum scale to a feature-specific scale.
+    * Small streams receive a restrained increase, while broad river polygons
+    * approach the requested factor without the unbounded growth of L^k.
+    */
+   public double effectiveRiverWidthScale(double worldScale, double requestedScale) {
+      if (!this.flowingWater()) {
+         return 1.0;
+      }
+
+      double requested = Math.max(1.0, requestedScale);
+      double baseWidth = this.riverWidthBlocks(worldScale);
+      double response = baseWidth / (baseWidth + WIDTH_RESPONSE_REFERENCE_BLOCKS);
+      return 1.0 + (requested - 1.0) * response;
+   }
+
+   /** Returns the lateral buffer required to widen a flowing polygon. */
+   public double riverWidthExpansionBlocks(double worldScale, double requestedScale) {
+      if (!this.flowingWater() || this.lineGeometry) {
+         return LINE_HALF_WIDTH_BLOCKS * Math.max(0.0, this.effectiveRiverWidthScale(worldScale, requestedScale) - 1.0);
+      }
+
+      return 0.5 * this.riverWidthBlocks(worldScale) * Math.max(0.0, this.effectiveRiverWidthScale(worldScale, requestedScale) - 1.0);
    }
 
    public boolean containsLonLat(double lon, double lat) {
@@ -199,11 +241,12 @@ public final class OsmWaterFeature {
       }
    }
 
-   private boolean touchesBlockLine(int blockX, int blockZ, double worldScale) {
+   private boolean touchesBlockLine(double blockX, double blockZ, double worldScale, double riverWidthScale) {
       double blocksPerDegree = EarthProjection.blocksPerDegree(worldScale);
       double queryX = blockX;
       double queryZ = blockZ;
-      double maxDistanceSq = LINE_HALF_WIDTH_BLOCKS * LINE_HALF_WIDTH_BLOCKS + 1.0E-6;
+      double halfWidth = LINE_HALF_WIDTH_BLOCKS * Math.max(1.0, riverWidthScale);
+      double maxDistanceSq = halfWidth * halfWidth + 1.0E-6;
 
       for (int part = 0; part < this.longitudes.length; part++) {
          double[] lonPart = this.longitudes[part];
@@ -221,6 +264,72 @@ public final class OsmWaterFeature {
       }
 
       return false;
+   }
+
+   private boolean touchesBlockPolygon(double blockX, double blockZ, double worldScale, double riverWidthScale) {
+      double expansion = this.riverWidthExpansionBlocks(worldScale, riverWidthScale);
+      if (expansion <= 0.0) {
+         return false;
+      }
+
+      double blocksPerDegree = EarthProjection.blocksPerDegree(worldScale);
+      double maxDistanceSq = expansion * expansion + 1.0E-6;
+      for (int part = 0; part < this.longitudes.length; part++) {
+         double[] lonPart = this.longitudes[part];
+         double[] latPart = this.latitudes[part];
+         int points = lonPart.length;
+         for (int point = 0; point < points; point++) {
+            int nextPoint = (point + 1) % points;
+            double startX = lonPart[point] * blocksPerDegree;
+            double startZ = EarthProjection.latToBlockZ(latPart[point], worldScale);
+            double endX = lonPart[nextPoint] * blocksPerDegree;
+            double endZ = EarthProjection.latToBlockZ(latPart[nextPoint], worldScale);
+            if (distanceToSegmentSq(blockX, blockZ, startX, startZ, endX, endZ) <= maxDistanceSq) {
+               return true;
+            }
+         }
+      }
+
+      return false;
+   }
+
+   private double riverWidthBlocks(double worldScale) {
+      return Math.max(1.0, this.riverWidthAtScaleOne / Math.max(1.0E-4, worldScale));
+   }
+
+   private double estimatePolygonWidthAtScaleOne() {
+      double minX = Double.POSITIVE_INFINITY;
+      double maxX = Double.NEGATIVE_INFINITY;
+      double minZ = Double.POSITIVE_INFINITY;
+      double maxZ = Double.NEGATIVE_INFINITY;
+      double area = 0.0;
+      double perimeter = 0.0;
+      double blocksPerDegree = EarthProjection.blocksPerDegree(1.0);
+
+      for (int part = 0; part < this.longitudes.length; part++) {
+         double[] longitudes = this.longitudes[part];
+         double[] latitudes = this.latitudes[part];
+         for (int point = 0; point < longitudes.length; point++) {
+            int next = (point + 1) % longitudes.length;
+            double x0 = longitudes[point] * blocksPerDegree;
+            double z0 = EarthProjection.latToBlockZ(latitudes[point], 1.0);
+            double x1 = longitudes[next] * blocksPerDegree;
+            double z1 = EarthProjection.latToBlockZ(latitudes[next], 1.0);
+            minX = Math.min(minX, x0);
+            maxX = Math.max(maxX, x0);
+            minZ = Math.min(minZ, z0);
+            maxZ = Math.max(maxZ, z0);
+            area += Math.abs(x0 * z1 - x1 * z0) * 0.5;
+            perimeter += Math.hypot(x1 - x0, z1 - z0);
+         }
+      }
+
+      if (!(perimeter > 1.0E-6) || !(area > 1.0E-6)) {
+         return 1.0;
+      }
+
+      double boundingWidth = Math.min(maxX - minX, maxZ - minZ);
+      return Math.max(1.0, Math.min(boundingWidth, 4.0 * area / perimeter));
    }
 
    private static double distanceToSegmentSq(double px, double pz, double ax, double az, double bx, double bz) {

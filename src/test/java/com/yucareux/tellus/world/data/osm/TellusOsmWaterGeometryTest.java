@@ -104,6 +104,51 @@ class TellusOsmWaterGeometryTest {
    }
 
    @Test
+   void widensFlowingLineGeometryByTheConfiguredRiverScale() {
+      OsmWaterFeature river = new OsmWaterFeature(
+         1L, true, false, OsmWaterKind.RIVER, new double[][]{{-0.01, 0.01}}, new double[][]{{0.0, 0.0}}
+      );
+
+      assertFalse(river.containsBlock(0, 1, 1.0));
+      assertTrue(river.containsBlock(0, 1, 1.0, 10.0));
+   }
+
+   @Test
+   void widensFlowingPolygonGeometryByTheConfiguredRiverScale() {
+      double degreesPerBlock = 1.0 / EarthProjection.blocksPerDegree(1.0);
+      OsmWaterFeature riverbank = new OsmWaterFeature(
+         1L,
+         false,
+         false,
+         OsmWaterKind.RIVER,
+         new double[][]{{-0.5 * degreesPerBlock, 0.5 * degreesPerBlock, 0.5 * degreesPerBlock, -0.5 * degreesPerBlock}},
+         new double[][]{{-0.5 * degreesPerBlock, -0.5 * degreesPerBlock, 0.5 * degreesPerBlock, 0.5 * degreesPerBlock}}
+      );
+
+      assertFalse(riverbank.containsBlock(1, 0, 1.0));
+      assertTrue(riverbank.containsBlock(1, 0, 1.0, 10.0));
+   }
+
+   @Test
+   void givesBroaderRiversMoreOfTheRequestedScale() {
+      double degreesPerBlock = 1.0 / EarthProjection.blocksPerDegree(1.0);
+      OsmWaterFeature stream = new OsmWaterFeature(
+         1L, true, false, OsmWaterKind.STREAM, new double[][]{{-degreesPerBlock, degreesPerBlock}}, new double[][]{{0.0, 0.0}}
+      );
+      OsmWaterFeature river = new OsmWaterFeature(
+         2L,
+         false,
+         false,
+         OsmWaterKind.RIVER,
+         new double[][]{{-8.0 * degreesPerBlock, 8.0 * degreesPerBlock, 8.0 * degreesPerBlock, -8.0 * degreesPerBlock}},
+         new double[][]{{-8.0 * degreesPerBlock, -8.0 * degreesPerBlock, 8.0 * degreesPerBlock, 8.0 * degreesPerBlock}}
+      );
+
+      assertTrue(river.effectiveRiverWidthScale(1.0, 3.0) > stream.effectiveRiverWidthScale(1.0, 3.0));
+      assertTrue(river.effectiveRiverWidthScale(1.0, 3.0) < 3.0);
+   }
+
+   @Test
    void invalidatesParsedCacheThatLostPhysicalSubtype() throws Exception {
       Path path = this.tempDir.resolve("water-v3.bin");
       try (DataOutputStream output = new DataOutputStream(Files.newOutputStream(path))) {

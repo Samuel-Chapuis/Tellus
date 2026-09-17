@@ -35,6 +35,9 @@ ext.tellus = [
 	overriddenInheritedClientSources: [
 		'com/yucareux/tellus/network/TellusNeoForgeClientNetworking.java',
 	],
+	overriddenInheritedMainSources: [
+		'com/yucareux/tellus/network/TellusNeoForgeNetworking.java',
+	],
 	overriddenInheritedMainResources: ['META-INF/neoforge.mods.toml'],
 ]
 
