@@ -300,9 +300,9 @@ class EarthGeneratorSettingsCodecTest {
    @Test
    void persistsRiverWidthScaleAndClampsInvalidValues() {
       EarthGeneratorSettings decoded = requireSuccess(
-         EarthGeneratorSettings.CODEC.parse(JsonOps.INSTANCE, JsonParser.parseString("{\"river_width_scale\":3.25}"))
+         EarthGeneratorSettings.CODEC.parse(JsonOps.INSTANCE, JsonParser.parseString("{\"river_width_scale\":2.25}"))
       );
-      assertEquals(3.25, decoded.riverWidthScale());
+      assertEquals(2.25, decoded.riverWidthScale());
 
       EarthGeneratorSettings clamped = requireSuccess(
          EarthGeneratorSettings.CODEC.parse(JsonOps.INSTANCE, JsonParser.parseString("{\"river_width_scale\":99.0}"))
@@ -310,7 +310,7 @@ class EarthGeneratorSettingsCodecTest {
       assertEquals(EarthGeneratorSettings.MAX_RIVER_WIDTH_SCALE, clamped.riverWidthScale());
 
       JsonObject encoded = requireSuccess(EarthGeneratorSettings.CODEC.encodeStart(JsonOps.INSTANCE, decoded)).getAsJsonObject();
-      assertEquals(3.25, encoded.get("river_width_scale").getAsDouble());
+      assertEquals(2.25, encoded.get("river_width_scale").getAsDouble());
    }
 
    private static JsonElement loadFixture(String path) throws IOException {

@@ -116,6 +116,80 @@ class WaterSurfaceResolverTest {
    }
 
    @Test
+   void smoothsOnlyTheWaterCellsAddedByRiverExpansion() {
+      int side = 32;
+      int[] waterSurface = new int[side * side];
+      boolean[] directRiver = new boolean[side * side];
+      boolean[] expansion = new boolean[side * side];
+      java.util.Arrays.fill(waterSurface, 64);
+      int original = 2 * side + 2;
+      directRiver[original] = true;
+      waterSurface[original] = 65;
+      int center = 18 * side + 18;
+      directRiver[center] = true;
+      expansion[center] = true;
+      waterSurface[center] = 70;
+
+      WaterSurfaceResolver.smoothExpandedDirectRiverWaterSurfaces(
+         waterSurface,
+         directRiver,
+         expansion,
+         0,
+         0,
+         side,
+         new int[side * side],
+         new long[side * side],
+         new int[side * side]
+      );
+
+      assertEquals(65, waterSurface[center]);
+      assertEquals(65, waterSurface[original]);
+   }
+
+   @Test
+   void capsExpandedRiverWaterAfterFlowUsingTheChunkReferenceHeight() {
+      int side = 16;
+      int[] waterSurface = new int[side * side];
+      int[] surfaceHeights = new int[side * side];
+      boolean[] flowingWater = new boolean[side * side];
+      boolean[] directRiver = new boolean[side * side];
+      boolean[] inlandRiver = new boolean[side * side];
+      boolean[] expansion = new boolean[side * side];
+      boolean[] waterfall = new boolean[side * side];
+      int original = 2 * side + 2;
+      int expanded = 12 * side + 12;
+      waterSurface[original] = 64;
+      surfaceHeights[original] = 64;
+      flowingWater[original] = true;
+      directRiver[original] = true;
+      waterSurface[expanded] = 70;
+      surfaceHeights[expanded] = 70;
+      directRiver[expanded] = true;
+      expansion[expanded] = true;
+
+      WaterSurfaceResolver.capExpandedRiverWaterSurfaces(
+         waterSurface,
+         surfaceHeights,
+         flowingWater,
+         directRiver,
+         inlandRiver,
+         expansion,
+         waterfall,
+         0,
+         0,
+         side,
+         new long[side * side],
+         new int[side * side],
+         new double[side * side]
+      );
+
+      assertEquals(65, waterSurface[expanded]);
+      assertEquals(1, WaterSurfaceResolver.riverExpansionChunkHeightAllowance(0.0));
+      assertEquals(2, WaterSurfaceResolver.riverExpansionChunkHeightAllowance(0.3));
+      assertEquals(3, WaterSurfaceResolver.riverExpansionChunkHeightAllowance(1.0));
+   }
+
+   @Test
    void polygonRiversDoNotUseDirectLineWaterMask() {
       OsmWaterFeature polygonRiver = new OsmWaterFeature(
          1L,
@@ -279,6 +353,26 @@ class WaterSurfaceResolverTest {
       assertTrue(data.isWaterfallDrop(0, 0));
       assertEquals(80, data.terrainSurface(0, 0));
       assertEquals(96, data.waterSurface(0, 0));
+   }
+
+   @Test
+   void retainsRiverWidthExpansionMetadataForTheFinalBlockPass() {
+      int[] terrain = new int[256];
+      int[] water = new int[256];
+      byte[] flags = new byte[256];
+      boolean[] flowingRiver = new boolean[256];
+      boolean[] expansion = new boolean[256];
+      flags[0] = 1;
+      flowingRiver[0] = true;
+      expansion[0] = true;
+
+      WaterSurfaceResolver.WaterChunkData data = WaterSurfaceResolver.WaterChunkData.fromArrays(
+         terrain, water, flags, flowingRiver, expansion, false
+      );
+
+      assertTrue(data.isFlowingRiver(0, 0));
+      assertTrue(data.isRiverWidthExpansion(0, 0));
+      assertFalse(data.isRiverWidthExpansion(1, 0));
    }
 
    @Test

@@ -100,7 +100,7 @@ public record EarthGeneratorSettings(
    private static final double MARIANA_TRENCH_METERS = -11034.0;
    public static final double MAX_WORLD_SCALE = 1000.0;
    public static final double MIN_RIVER_WIDTH_SCALE = 1.0;
-   public static final double MAX_RIVER_WIDTH_SCALE = 10.0;
+   public static final double MAX_RIVER_WIDTH_SCALE = 2.5;
    private static final int MAX_VOXY_PREGEN_RADIUS = 1024;
    private static final int MAX_VOXY_PREGEN_CHUNKS_PER_TICK = 200;
    private static final int MAX_DH_OSM_DETAIL = 24;
