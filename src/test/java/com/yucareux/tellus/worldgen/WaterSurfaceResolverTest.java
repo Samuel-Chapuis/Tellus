@@ -183,10 +183,62 @@ class WaterSurfaceResolverTest {
          new double[side * side]
       );
 
-      assertEquals(65, waterSurface[expanded]);
-      assertEquals(1, WaterSurfaceResolver.riverExpansionChunkHeightAllowance(0.0));
-      assertEquals(2, WaterSurfaceResolver.riverExpansionChunkHeightAllowance(0.3));
-      assertEquals(3, WaterSurfaceResolver.riverExpansionChunkHeightAllowance(1.0));
+      assertEquals(64, waterSurface[expanded]);
+      assertEquals(0, WaterSurfaceResolver.riverExpansionChunkHeightAllowance(0.0));
+      assertEquals(0, WaterSurfaceResolver.riverExpansionChunkHeightAllowance(0.3));
+      assertEquals(1, WaterSurfaceResolver.riverExpansionChunkHeightAllowance(1.0));
+      assertEquals(2, WaterSurfaceResolver.riverExpansionChunkHeightAllowance(2.0));
+   }
+
+   @Test
+   void capsExpandedRiverWaterUsingTheThreeByThreeChunkReferenceHeight() {
+      int side = 48;
+      int[] waterSurface = new int[side * side];
+      int[] surfaceHeights = new int[side * side];
+      boolean[] flowingWater = new boolean[side * side];
+      boolean[] directRiver = new boolean[side * side];
+      boolean[] inlandRiver = new boolean[side * side];
+      boolean[] expansion = new boolean[side * side];
+      boolean[] waterfall = new boolean[side * side];
+      java.util.Arrays.fill(waterSurface, 64);
+      java.util.Arrays.fill(surfaceHeights, 64);
+      int westernSource = 8 * side + 8;
+      int centerSource = 24 * side + 24;
+      int expanded = 25 * side + 25;
+
+      waterSurface[westernSource] = 60;
+      surfaceHeights[westernSource] = 60;
+      flowingWater[westernSource] = true;
+      directRiver[westernSource] = true;
+      waterSurface[centerSource] = 66;
+      surfaceHeights[centerSource] = 66;
+      flowingWater[centerSource] = true;
+      directRiver[centerSource] = true;
+      waterSurface[expanded] = 80;
+      surfaceHeights[expanded] = 80;
+      directRiver[expanded] = true;
+      expansion[expanded] = true;
+
+      WaterSurfaceResolver.capExpandedRiverWaterSurfaces(
+         waterSurface,
+         surfaceHeights,
+         flowingWater,
+         directRiver,
+         inlandRiver,
+         expansion,
+         waterfall,
+         0,
+         0,
+         side,
+         new long[side * side],
+         new int[side * side],
+         new double[side * side]
+      );
+
+      // The 3x3-chunk window uses both source columns: floor((60 + 66) / 2) + 0.
+      assertEquals(63, waterSurface[expanded]);
+      assertEquals(63, waterSurface[centerSource]);
+      assertEquals(3, WaterSurfaceResolver.riverExpansionChunkHeightAllowance(9.0));
    }
 
    @Test

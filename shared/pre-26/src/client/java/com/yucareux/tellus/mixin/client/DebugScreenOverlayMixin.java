@@ -9,6 +9,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.level.material.Fluids;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
@@ -23,7 +24,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  */
 @Mixin(DebugScreenOverlay.class)
 public abstract class DebugScreenOverlayMixin {
-   private static final String BLUE = "\u00A79";
+   private static final String BLUE = "\u00A7b";
 
    @Inject(method = "renderLines", at = @At("HEAD"))
    private void tellus$addRiverDebugLines(GuiGraphics graphics, List<String> lines, boolean leftSide, CallbackInfo ci) {
@@ -63,5 +64,29 @@ public abstract class DebugScreenOverlayMixin {
       for (int index = firstGeneratorLine; index < lines.size(); index++) {
          lines.set(index, BLUE + lines.get(index));
       }
+      tellus$addActualWaterColumn(lines, level, pos);
+   }
+
+   private static void tellus$addActualWaterColumn(List<String> lines, ServerLevel level, BlockPos pos) {
+      int minY = Math.max(level.getMinBuildHeight(), pos.getY() - 64);
+      int maxY = Math.min(level.getMaxBuildHeight() - 1, pos.getY() + 64);
+      BlockPos.MutableBlockPos cursor = new BlockPos.MutableBlockPos(pos.getX(), maxY, pos.getZ());
+
+      for (int y = maxY; y >= minY; y--) {
+         cursor.setY(y);
+         if (level.getFluidState(cursor).is(Fluids.WATER)) {
+            lines.add(
+               BLUE
+                  + "Tellus river actual: waterTopBlockY="
+                  + y
+                  + " surfaceY="
+                  + (y + 1)
+                  + " source="
+                  + level.getFluidState(cursor).isSource()
+            );
+            return;
+         }
+      }
+      lines.add(BLUE + "Tellus river actual: no water in column around player");
    }
 }

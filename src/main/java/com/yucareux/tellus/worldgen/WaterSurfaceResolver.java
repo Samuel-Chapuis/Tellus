@@ -75,9 +75,14 @@ public final class WaterSurfaceResolver implements TellusCacheHandle {
    private static final double RIVER_LAKE_WIDTH_FACTOR = 0.75;
    private static final int RIVER_LAKE_MIN_WIDTH = 12;
    private static final double RIVER_EXPANSION_MAX_SLOPE = Math.tan(Math.toRadians(20.0));
-   private static final int RIVER_EXPANSION_CHUNK_HEIGHT_ALLOWANCE_MIN = 1;
+   // Flat 3x3 groups need no extra vertical allowance: expansion must stay at
+   // the regional mean.  Additional headroom is earned progressively by slope.
+   private static final int RIVER_EXPANSION_CHUNK_HEIGHT_ALLOWANCE_MIN = 0;
    private static final int RIVER_EXPANSION_CHUNK_HEIGHT_ALLOWANCE_MAX = 3;
-   private static final double RIVER_EXPANSION_CHUNK_HEIGHT_SLOPE_FACTOR = 4.0;
+   // A one-block tolerance is enough for terrain whose local slope is below 1:1.
+   // Using a multiplier of four made an ordinary half-block slope grant the full
+   // three-block tolerance, which left visible water blobs in otherwise flat areas.
+   private static final double RIVER_EXPANSION_CHUNK_HEIGHT_SLOPE_FACTOR = 1.0;
    private static final double BORDER_HEIGHT_PERCENTILE = 0.1;
    private static final double LAKE_SURFACE_HINT_PERCENTILE = 0.25;
    private static final int LAKE_MAX_TERRAIN_CUT = intProperty("tellus.water.lakeMaxTerrainCut", 12, 1, 64);
@@ -1247,7 +1252,7 @@ public final class WaterSurfaceResolver implements TellusCacheHandle {
             gridSize,
             scratch.riverChunkSurfaceSums,
             scratch.riverChunkSurfaceCounts,
-            scratch.riverChunkMaxSlopes
+            scratch.riverChunkSlopeSums
          );
          this.prepareAdaptiveBlendRadii(
             adaptiveBlendRadius,
@@ -3762,7 +3767,7 @@ public final class WaterSurfaceResolver implements TellusCacheHandle {
       int gridSize,
       long[] riverChunkSurfaceSums,
       int[] riverChunkSurfaceCounts,
-      double[] riverChunkMaxSlopes
+      double[] riverChunkSlopeSums
    ) {
       int area = gridSize * gridSize;
       int minChunkX = Math.floorDiv(gridMinX, CHUNK_SIZE);
@@ -3772,7 +3777,7 @@ public final class WaterSurfaceResolver implements TellusCacheHandle {
       int chunkArea = chunkGridWidth * chunkGridHeight;
       Arrays.fill(riverChunkSurfaceSums, 0, chunkArea, 0L);
       Arrays.fill(riverChunkSurfaceCounts, 0, chunkArea, 0);
-      Arrays.fill(riverChunkMaxSlopes, 0, chunkArea, 0.0);
+      Arrays.fill(riverChunkSlopeSums, 0, chunkArea, 0.0);
 
       boolean hasExpandedRiverWater = false;
       for (int z = 0; z < gridSize; z++) {
@@ -3791,7 +3796,7 @@ public final class WaterSurfaceResolver implements TellusCacheHandle {
             int chunkIndex = chunkZ * chunkGridWidth + chunkX;
             riverChunkSurfaceSums[chunkIndex] += waterSurface[index];
             riverChunkSurfaceCounts[chunkIndex]++;
-            riverChunkMaxSlopes[chunkIndex] = Math.max(riverChunkMaxSlopes[chunkIndex], terrainSlopeAt(surfaceHeights, gridSize, x, z));
+            riverChunkSlopeSums[chunkIndex] += terrainSlopeAt(surfaceHeights, gridSize, x, z);
          }
       }
       if (!hasExpandedRiverWater) {
@@ -3803,28 +3808,29 @@ public final class WaterSurfaceResolver implements TellusCacheHandle {
          for (int x = 0; x < gridSize; x++) {
             int index = z * gridSize + x;
             boolean riverWater = directRiverWaterMask[index] || inlandWaterMask[index];
-            if (!riverExpansionMask[index] || !riverWater || waterfallNoCarveMask[index]) {
+             if (!riverWater || waterfallNoCarveMask[index]) {
                continue;
             }
 
             int chunkX = Math.floorDiv(gridMinX + x, CHUNK_SIZE) - minChunkX;
             int chunkIndex = chunkZ * chunkGridWidth + chunkX;
-            long sum = riverChunkSurfaceSums[chunkIndex];
-            int count = riverChunkSurfaceCounts[chunkIndex];
-            double maxSlope = riverChunkMaxSlopes[chunkIndex];
-            if (count == 0) {
-               for (int neighborZ = Math.max(0, chunkZ - 1); neighborZ <= Math.min(chunkGridHeight - 1, chunkZ + 1); neighborZ++) {
-                  for (int neighborX = Math.max(0, chunkX - 1); neighborX <= Math.min(chunkGridWidth - 1, chunkX + 1); neighborX++) {
-                     int neighborChunk = neighborZ * chunkGridWidth + neighborX;
-                     sum += riverChunkSurfaceSums[neighborChunk];
-                     count += riverChunkSurfaceCounts[neighborChunk];
-                     maxSlope = Math.max(maxSlope, riverChunkMaxSlopes[neighborChunk]);
-                  }
+            // Always use the surrounding 3x3 chunks.  Restricting the window to
+            // chunks without a source made the water reference jump at chunk borders.
+            long sum = 0L;
+            int count = 0;
+            double slopeSum = 0.0;
+            for (int neighborZ = Math.max(0, chunkZ - 1); neighborZ <= Math.min(chunkGridHeight - 1, chunkZ + 1); neighborZ++) {
+               for (int neighborX = Math.max(0, chunkX - 1); neighborX <= Math.min(chunkGridWidth - 1, chunkX + 1); neighborX++) {
+                  int neighborChunk = neighborZ * chunkGridWidth + neighborX;
+                  sum += riverChunkSurfaceSums[neighborChunk];
+                  count += riverChunkSurfaceCounts[neighborChunk];
+                  slopeSum += riverChunkSlopeSums[neighborChunk];
                }
             }
             if (count > 0) {
                int meanSurface = (int)Math.floorDiv(sum, (long)count);
-               int maximumSurface = meanSurface + riverExpansionChunkHeightAllowance(maxSlope);
+               double meanSlope = Mth.clamp(slopeSum / (double)count, 0.0, 3.0);
+               int maximumSurface = meanSurface + riverExpansionChunkHeightAllowance(meanSlope);
                waterSurface[index] = Math.min(waterSurface[index], maximumSurface);
             }
          }
@@ -3833,7 +3839,8 @@ public final class WaterSurfaceResolver implements TellusCacheHandle {
 
    static int riverExpansionChunkHeightAllowance(double terrainSlope) {
       return Mth.clamp(
-         RIVER_EXPANSION_CHUNK_HEIGHT_ALLOWANCE_MIN + (int)Math.floor(Math.max(0.0, terrainSlope) * RIVER_EXPANSION_CHUNK_HEIGHT_SLOPE_FACTOR),
+         RIVER_EXPANSION_CHUNK_HEIGHT_ALLOWANCE_MIN
+            + (int)Math.floor(Mth.clamp(terrainSlope, 0.0, 3.0) * RIVER_EXPANSION_CHUNK_HEIGHT_SLOPE_FACTOR),
          RIVER_EXPANSION_CHUNK_HEIGHT_ALLOWANCE_MIN,
          RIVER_EXPANSION_CHUNK_HEIGHT_ALLOWANCE_MAX
       );
@@ -3847,7 +3854,7 @@ public final class WaterSurfaceResolver implements TellusCacheHandle {
       int index = z * gridSize + x;
       double gradientX = (surfaceHeights[index + 1] - surfaceHeights[index - 1]) * 0.5;
       double gradientZ = (surfaceHeights[index + gridSize] - surfaceHeights[index - gridSize]) * 0.5;
-      return Math.hypot(gradientX, gradientZ);
+      return Mth.clamp(Math.hypot(gradientX, gradientZ), 0.0, 3.0);
    }
 
    private static int riverWidthExpansionBlocks(double riverWidthScale) {
@@ -4106,7 +4113,7 @@ public final class WaterSurfaceResolver implements TellusCacheHandle {
       private int[] smoothedRiverSurface;
       private long[] riverChunkSurfaceSums;
       private int[] riverChunkSurfaceCounts;
-      private double[] riverChunkMaxSlopes;
+      private double[] riverChunkSlopeSums;
       private int[] terrainSurface;
       private byte[] waterFlags;
 	      private boolean[] inlandWaterMask;
@@ -4166,7 +4173,7 @@ public final class WaterSurfaceResolver implements TellusCacheHandle {
             this.smoothedRiverSurface = new int[size];
             this.riverChunkSurfaceSums = new long[size];
             this.riverChunkSurfaceCounts = new int[size];
-            this.riverChunkMaxSlopes = new double[size];
+            this.riverChunkSlopeSums = new double[size];
             this.terrainSurface = new int[size];
             this.waterFlags = new byte[size];
 	            this.inlandWaterMask = new boolean[size];
