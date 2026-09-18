@@ -54,8 +54,14 @@ public final class HighYPackedCoordinateProfile {
    public static final int DIMENSION_MAX_Y = 12_271;
    public static final int DIMENSION_Y_SIZE = DIMENSION_MAX_Y - DIMENSION_MIN_Y + 1;
 
-   private static final String REQUESTED_PROFILE = System.getProperty(PROFILE_PROPERTY, PROFILE_ID).trim();
-   private static final boolean ENABLED = PROFILE_ID.equals(REQUESTED_PROFILE);
+   /*
+    * This profile replaces Minecraft's global BlockPos encoding.  It must
+    * therefore never be enabled merely by installing Tellus: physics mods
+    * such as Sable (used by Create Aeronautics) persist and exchange packed
+    * positions independently of Tellus world generation.
+    */
+   private static final String REQUESTED_PROFILE = requestedProfile(System.getProperty(PROFILE_PROPERTY));
+   private static final boolean ENABLED = isEnabledForRequestedProfile(REQUESTED_PROFILE);
 
    static {
       validateAxisSizes(X_SIZE, Z_SIZE);
@@ -87,12 +93,20 @@ public final class HighYPackedCoordinateProfile {
       return ENABLED;
    }
 
+   static boolean isEnabledForRequestedProfile(String requestedProfile) {
+      return PROFILE_ID.equals(requestedProfile(requestedProfile));
+   }
+
    public static String requestedProfile() {
       return REQUESTED_PROFILE;
    }
 
    public static String launchPropertyInstruction() {
       return "-D" + PROFILE_PROPERTY + "=" + PROFILE_ID;
+   }
+
+   private static String requestedProfile(String requestedProfile) {
+      return requestedProfile == null ? "" : requestedProfile.trim();
    }
 
    public static long pack(int x, int y, int z) {
