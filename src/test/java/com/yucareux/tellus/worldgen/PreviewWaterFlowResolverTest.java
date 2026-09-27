@@ -344,6 +344,31 @@ class PreviewWaterFlowResolverTest {
       assertFalse(result.waterfallProtection()[downstreamHump]);
    }
 
+   @Test
+   void canonicalPlanOverridesLegacyLineAndPolygonProfilesAtEveryPreviewScale() {
+      for (int step : new int[]{1, 4, 16}) for (boolean polygons : new boolean[]{false, true}) {
+         int size = 9;
+         PreviewGrid grid = polygons ? flowingRow(size, new int[]{90, 30, 80, 70, 40, 100, 30})
+            : flowingLineOnlyRow(size, new int[]{90, 30, 80, 70, 40, 100, 30});
+         PreviewWaterFlowResolver.Result result = PreviewWaterFlowResolver.resolve(
+            size, step, -128, 256, grid.terrain(), grid.inland(), grid.ocean(), grid.line(), grid.area(),
+            grid.flowing(), new boolean[size * size], grid.oceanSurface(), 2, 20, 12, 4, 5, true, FLOW_PARAMETERS,
+            (x, z) -> {
+               assertEquals(256 + 4 * step, z);
+               int localX = (x + 128) / step;
+               return localX == 4 ? new RiverNetworkPlan.Column(60, 56, 70, 1)
+                  : new RiverNetworkPlan.Column(70, 66, Integer.MIN_VALUE, 0);
+            });
+         for (int x = 1; x <= 7; x++) {
+            int cell = index(size, x, 4);
+            assertEquals(70, result.waterSurface()[cell]);
+            assertEquals(x == 4 ? 56 : 66, result.terrainSurface()[cell]);
+            assertEquals(x == 4, result.waterfallDrop()[cell]);
+            assertEquals(x != 4, result.inlandWater()[cell]);
+         }
+      }
+   }
+
    private static PreviewWaterFlowResolver.Result resolve(
       PreviewGrid grid,
       InlandWaterFlowAnalyzer.Parameters parameters

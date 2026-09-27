@@ -14,8 +14,8 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 /**
- * Disables only the infinite-source conversion that can make DEM-following
- * waterfall sheets fill their surroundings. Normal spreading and downward
+ * Disables only infinite-source conversion inside planned river heights and
+ * waterfall sheets. Normal spreading and downward
  * flow still run through vanilla's FlowingFluid implementation.
  */
 @Mixin(FlowingFluid.class)
@@ -38,7 +38,7 @@ public class WaterSourceConversionMixin {
          && current.getType().isSame(Fluids.WATER)
          && level instanceof ServerLevel serverLevel
          && serverLevel.getChunkSource().getGenerator() instanceof EarthChunkGenerator generator
-         && generator.shouldSuppressWaterSourceConversion(pos.getX(), pos.getZ())) {
+         && generator.shouldSuppressWaterSourceConversion(pos.getX(), pos.getY(), pos.getZ())) {
          // Returning the existing flowing state blocks only this attempted
          // conversion. The next vanilla tick still updates and spreads it.
          cir.setReturnValue(current);

@@ -392,7 +392,6 @@ public final class EarthChunkGenerator extends ChunkGenerator {
    private final Map<Long, EarthChunkGenerator.PreparedChunkBuildings> preparedChunkBuildings = new ConcurrentHashMap<>();
    private final Map<Long, EarthChunkGenerator.PreparedChunkRoadLights> preparedChunkRoadLights = new ConcurrentHashMap<>();
    private final Map<Long, EarthChunkGenerator.ChunkDecorationContext> chunkDecorationContexts = new ConcurrentHashMap<>();
-   private final Map<Long, EarthChunkGenerator.RiverWidthBlockPassDebug> riverWidthBlockPassDebug = new ConcurrentHashMap<>();
    private final ConcurrentHashMap<Long, Long> preparedChunkStateTouchedAt = new ConcurrentHashMap<>();
    private final EarthChunkGenerator.HeightGridCache heightGridCache = new EarthChunkGenerator.HeightGridCache(HEIGHT_GRID_CACHE_ENTRIES);
    private final EarthChunkGenerator.ChunkDetailManager chunkDetailManager = new EarthChunkGenerator.ChunkDetailManager();
@@ -453,8 +452,8 @@ public final class EarthChunkGenerator extends ChunkGenerator {
       return this.settings;
    }
 
-   public boolean shouldSuppressWaterSourceConversion(int blockX, int blockZ) {
-      return this.waterResolver.shouldSuppressWaterSourceConversion(blockX, blockZ);
+   public boolean shouldSuppressWaterSourceConversion(int blockX, int blockY, int blockZ) {
+      return this.waterResolver.shouldSuppressWaterSourceConversion(blockX, blockY, blockZ);
    }
 
    public long worldSeed() {
@@ -1620,11 +1619,7 @@ public final class EarthChunkGenerator extends ChunkGenerator {
       recordFullChunkProfiling(EarthChunkGenerator.FullChunkPhase.FILL_BLOCKS_SNOW, snowApplyNs);
       endFullChunkProfiling(EarthChunkGenerator.FullChunkPhase.FILL_BLOCKS, phaseStartNs);
 
-      // Runs after ChunkSectionWriter.finish(), so this pass sees the actual
-      // Minecraft blocks rather than intermediate surface/voxel data.
-      this.clipExpandedRiverWaterBlocks(
-         chunk, waterData, terrainSurfaces, waterSurfaces, waterFlags, oceanFlags, chunkMinY, chunkMaxY - 1
-      );
+      // RiverNetworkPlan owns elevations; chunk-local clipping would break its sections.
 
       if (thinShellTerrain) {
          this.applyUndergroundStructureProtection(structures, chunk, terrainSurfaces, false);
@@ -1641,205 +1636,6 @@ public final class EarthChunkGenerator extends ChunkGenerator {
          this.carveStructureClearanceVolumes(structures, chunk);
          endFullChunkProfiling(EarthChunkGenerator.FullChunkPhase.FILL_STRUCTURE_CLEARANCE, phaseStartNs);
       }
-   }
-
-   private void clipExpandedRiverWaterBlocks(
-      ChunkAccess chunk,
-      WaterSurfaceResolver.WaterChunkData waterData,
-      int[] terrainSurfaces,
-      int[] waterSurfaces,
-      boolean[] waterFlags,
-      boolean[] oceanFlags,
-      int chunkMinY,
-      int chunkMaxY
-   ) {
-      ChunkPos chunkPos = chunk.getPos();
-      long chunkKey = MinecraftVersionCompat.packChunkPos(MinecraftVersionCompat.chunkX(chunkPos), MinecraftVersionCompat.chunkZ(chunkPos));
-      int expandedColumns = 0;
-
-      for (int localZ = 0; localZ < CHUNK_SIDE; localZ++) {
-         for (int localX = 0; localX < CHUNK_SIDE; localX++) {
-            int index = chunkIndex(localX, localZ);
-            if (waterFlags[index] && waterData.isFlowingRiver(localX, localZ) && waterData.isRiverWidthExpansion(localX, localZ)) {
-               expandedColumns++;
-            }
-         }
-      }
-      EarthChunkGenerator.RiverWidthChunkLimit limit = this.resolveRiverWidthChunkLimit(chunkPos, waterData);
-      int sourceCount = limit.sourceColumns();
-      if (sourceCount == 0) {
-         this.riverWidthBlockPassDebug.put(
-            chunkKey, new EarthChunkGenerator.RiverWidthBlockPassDebug(0, expandedColumns, Integer.MIN_VALUE, Integer.MIN_VALUE, 0.0, 0, 0)
-         );
-         return;
-      }
-
-      int meanWaterSurface = limit.meanSurface();
-      int maximumWaterSurface = limit.maximumSurface();
-      double maximumSourceSlope = limit.meanSlope();
-      MutableBlockPos cursor = new MutableBlockPos();
-      int chunkMinX = chunkPos.getMinBlockX();
-      int chunkMinZ = chunkPos.getMinBlockZ();
-      int clippedColumns = 0;
-      int removedWaterBlocks = 0;
-
-      for (int localZ = 0; localZ < CHUNK_SIDE; localZ++) {
-         int worldZ = chunkMinZ + localZ;
-         for (int localX = 0; localX < CHUNK_SIDE; localX++) {
-            int index = chunkIndex(localX, localZ);
-            if (!waterFlags[index]
-               || oceanFlags[index]
-               || !waterData.isFlowingRiver(localX, localZ)
-               || waterSurfaces[index] <= maximumWaterSurface) {
-               continue;
-            }
-
-            int firstRemovedY = Math.max(chunkMinY, maximumWaterSurface + 1);
-            int lastWaterY = Math.min(chunkMaxY, waterSurfaces[index]);
-            int worldX = chunkMinX + localX;
-            int removedInColumn = 0;
-            for (int y = firstRemovedY; y <= lastWaterY; y++) {
-               cursor.set(worldX, y, worldZ);
-               if (chunk.getBlockState(cursor).is(Blocks.WATER)) {
-                  chunk.setBlockState(cursor, AIR_STATE);
-                  removedInColumn++;
-               }
-            }
-            if (removedInColumn > 0) {
-               clippedColumns++;
-               removedWaterBlocks += removedInColumn;
-            }
-            waterSurfaces[index] = maximumWaterSurface;
-            if (terrainSurfaces[index] >= maximumWaterSurface) {
-               waterFlags[index] = false;
-            }
-         }
-      }
-      this.riverWidthBlockPassDebug.put(
-         chunkKey,
-         new EarthChunkGenerator.RiverWidthBlockPassDebug(
-            sourceCount,
-            expandedColumns,
-            meanWaterSurface,
-            maximumWaterSurface,
-            maximumSourceSlope,
-            clippedColumns,
-            removedWaterBlocks
-         )
-      );
-   }
-
-   private EarthChunkGenerator.RiverWidthChunkLimit resolveRiverWidthChunkLimit(
-      ChunkPos centerChunk, WaterSurfaceResolver.WaterChunkData centerData
-   ) {
-      long sourceSurfaceSum = 0L;
-      int sourceColumns = 0;
-      double sourceSlopeSum = 0.0;
-
-      for (int offsetZ = -1; offsetZ <= 1; offsetZ++) {
-         for (int offsetX = -1; offsetX <= 1; offsetX++) {
-            WaterSurfaceResolver.WaterChunkData data = offsetX == 0 && offsetZ == 0
-               ? centerData
-               : this.resolveChunkWaterData(new ChunkPos(MinecraftVersionCompat.chunkX(centerChunk) + offsetX, MinecraftVersionCompat.chunkZ(centerChunk) + offsetZ));
-            for (int localZ = 0; localZ < CHUNK_SIDE; localZ++) {
-               for (int localX = 0; localX < CHUNK_SIDE; localX++) {
-                  if (!data.hasWater(localX, localZ)
-                     || data.isOcean(localX, localZ)
-                     || !data.isFlowingRiver(localX, localZ)
-                     || data.isRiverWidthExpansion(localX, localZ)) {
-                     continue;
-                  }
-                  sourceSurfaceSum += data.waterSurface(localX, localZ);
-                  sourceColumns++;
-                  sourceSlopeSum += chunkTerrainSlope(data, localX, localZ);
-               }
-            }
-         }
-      }
-
-      if (sourceColumns == 0) {
-         return EarthChunkGenerator.RiverWidthChunkLimit.NONE;
-      }
-      int meanSurface = (int)Math.floorDiv(sourceSurfaceSum, (long)sourceColumns);
-      double meanSlope = Mth.clamp(sourceSlopeSum / (double)sourceColumns, 0.0, 3.0);
-      return new EarthChunkGenerator.RiverWidthChunkLimit(
-         sourceColumns, meanSurface, meanSlope, meanSurface + WaterSurfaceResolver.riverExpansionChunkHeightAllowance(meanSlope)
-      );
-   }
-
-   private static double chunkTerrainSlope(WaterSurfaceResolver.WaterChunkData data, int localX, int localZ) {
-      int center = data.terrainSurface(localX, localZ);
-      double gradientX = localX == 0
-         ? data.terrainSurface(1, localZ) - center
-         : localX == CHUNK_MASK
-            ? center - data.terrainSurface(CHUNK_MASK - 1, localZ)
-            : (data.terrainSurface(localX + 1, localZ) - data.terrainSurface(localX - 1, localZ)) * 0.5;
-      double gradientZ = localZ == 0
-         ? data.terrainSurface(localX, 1) - center
-         : localZ == CHUNK_MASK
-            ? center - data.terrainSurface(localX, CHUNK_MASK - 1)
-            : (data.terrainSurface(localX, localZ + 1) - data.terrainSurface(localX, localZ - 1)) * 0.5;
-      return Mth.clamp(Math.hypot(gradientX, gradientZ), 0.0, 3.0);
-   }
-
-   private EarthChunkGenerator.RiverWidthChunkDebug debugRiverWidthChunk(
-      ChunkPos chunkPos, WaterSurfaceResolver.WaterChunkData waterData
-   ) {
-      int expandedColumns = 0;
-      for (int localZ = 0; localZ < CHUNK_SIDE; localZ++) {
-         for (int localX = 0; localX < CHUNK_SIDE; localX++) {
-            if (waterData.isRiverWidthExpansion(localX, localZ)) {
-               expandedColumns++;
-            }
-         }
-      }
-
-      EarthChunkGenerator.RiverWidthChunkLimit limit = this.resolveRiverWidthChunkLimit(chunkPos, waterData);
-      int meanSurface = limit.meanSurface();
-      int maximumSurface = limit.maximumSurface();
-      int expectedBlockClip = 0;
-      if (maximumSurface != Integer.MIN_VALUE) {
-         for (int localZ = 0; localZ < CHUNK_SIDE; localZ++) {
-            for (int localX = 0; localX < CHUNK_SIDE; localX++) {
-               if (waterData.hasWater(localX, localZ)
-                   && waterData.isFlowingRiver(localX, localZ)
-                   && waterData.waterSurface(localX, localZ) > maximumSurface) {
-                  expectedBlockClip++;
-               }
-            }
-         }
-      }
-      return new EarthChunkGenerator.RiverWidthChunkDebug(
-         limit.sourceColumns(), expandedColumns, meanSurface, maximumSurface, limit.meanSlope(), expectedBlockClip, waterData.approximate()
-      );
-   }
-
-   private record RiverWidthChunkLimit(int sourceColumns, int meanSurface, double meanSlope, int maximumSurface) {
-      private static final EarthChunkGenerator.RiverWidthChunkLimit NONE = new EarthChunkGenerator.RiverWidthChunkLimit(
-         0, Integer.MIN_VALUE, 0.0, Integer.MIN_VALUE
-      );
-   }
-
-   private record RiverWidthBlockPassDebug(
-      int sourceColumns,
-      int expandedColumns,
-      int meanSurface,
-      int maximumSurface,
-      double maximumSourceSlope,
-      int clippedColumns,
-      int removedWaterBlocks
-   ) {
-   }
-
-   private record RiverWidthChunkDebug(
-      int sourceColumns,
-      int expandedColumns,
-      int meanSurface,
-      int maximumSurface,
-      double maximumSourceSlope,
-      int expectedBlockClip,
-      boolean approximate
-   ) {
    }
 
    private static void validateExperimentalChunkBounds(EarthGeneratorSettings settings, ChunkPos pos) {
@@ -4941,64 +4737,17 @@ public final class EarthChunkGenerator extends ChunkGenerator {
    public void addDebugScreenInfo( List<String> info,  RandomState random,  BlockPos pos) {
       info.add(String.format("Tellus scale: %.1f", this.settings.worldScale()));
       ChunkPos chunkPos = new ChunkPos(pos.getX() >> 4, pos.getZ() >> 4);
-      long chunkKey = MinecraftVersionCompat.packChunkPos(MinecraftVersionCompat.chunkX(chunkPos), MinecraftVersionCompat.chunkZ(chunkPos));
-      EarthChunkGenerator.RiverWidthBlockPassDebug riverDebug = this.riverWidthBlockPassDebug.get(chunkKey);
       String blue = "\u00A7b";
       try {
          WaterSurfaceResolver.WaterChunkData waterData = this.resolveChunkWaterData(chunkPos);
-         EarthChunkGenerator.RiverWidthChunkDebug resolved = this.debugRiverWidthChunk(chunkPos, waterData);
-         info.add(
-            blue
-               + "Tellus river: chunk "
-               + MinecraftVersionCompat.chunkX(chunkPos)
-               + ","
-               + MinecraftVersionCompat.chunkZ(chunkPos)
-               + " scale="
-               + String.format("%.2f", this.settings.riverWidthScale())
-               + " source(3x3)="
-               + resolved.sourceColumns()
-               + " expanded="
-               + resolved.expandedColumns()
-               + " data="
-               + (resolved.approximate() ? "approx" : "exact")
-         );
-         info.add(
-            blue
-               + "Tellus river: meanBlockY(3x3)="
-               + resolved.meanSurface()
-               + " capBlockY="
-               + resolved.maximumSurface()
-               + " slope="
-               + String.format("%.3f", resolved.maximumSourceSlope())
-               + " expectedBlockClip="
-               + resolved.expectedBlockClip()
-         );
          int localX = pos.getX() & CHUNK_MASK;
          int localZ = pos.getZ() & CHUNK_MASK;
-         boolean flowingRiver = waterData.isFlowingRiver(localX, localZ);
-         boolean expandedRiver = waterData.isRiverWidthExpansion(localX, localZ);
-         info.add(
-            blue
-               + "Tellus river column: surface="
-               + waterData.waterSurface(localX, localZ)
-               + " terrain="
-               + waterData.terrainSurface(localX, localZ)
-               + " water="
-               + waterData.hasWater(localX, localZ)
-               + " original="
-               + (flowingRiver && !expandedRiver)
-               + " expanded="
-               + expandedRiver
-         );
-         if (riverDebug != null) {
-            info.add(
-               blue
-                  + "Tellus river block pass: clippedColumns="
-                  + riverDebug.clippedColumns()
-                  + " removedWaterBlocks="
-                  + riverDebug.removedWaterBlocks()
-            );
-         }
+         info.add(blue + "Tellus river: network v" + com.yucareux.tellus.worldgen.RiverNetworkPlan.VERSION
+            + " surface=" + waterData.waterSurface(localX, localZ)
+            + " bed=" + waterData.terrainSurface(localX, localZ)
+            + " flowing=" + waterData.isFlowingRiver(localX, localZ)
+            + " expanded=" + waterData.isRiverWidthExpansion(localX, localZ)
+            + " data=" + (waterData.approximate() ? "approx" : "exact"));
       } catch (RuntimeException error) {
          info.add(blue + "Tellus river: unable to resolve chunk diagnostics (" + error.getClass().getSimpleName() + ")");
       }

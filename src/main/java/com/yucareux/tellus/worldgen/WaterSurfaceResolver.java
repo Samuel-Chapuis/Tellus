@@ -75,14 +75,6 @@ public final class WaterSurfaceResolver implements TellusCacheHandle {
    private static final double RIVER_LAKE_WIDTH_FACTOR = 0.75;
    private static final int RIVER_LAKE_MIN_WIDTH = 12;
    private static final double RIVER_EXPANSION_MAX_SLOPE = Math.tan(Math.toRadians(20.0));
-   // Flat 3x3 groups need no extra vertical allowance: expansion must stay at
-   // the regional mean.  Additional headroom is earned progressively by slope.
-   private static final int RIVER_EXPANSION_CHUNK_HEIGHT_ALLOWANCE_MIN = 0;
-   private static final int RIVER_EXPANSION_CHUNK_HEIGHT_ALLOWANCE_MAX = 3;
-   // A one-block tolerance is enough for terrain whose local slope is below 1:1.
-   // Using a multiplier of four made an ordinary half-block slope grant the full
-   // three-block tolerance, which left visible water blobs in otherwise flat areas.
-   private static final double RIVER_EXPANSION_CHUNK_HEIGHT_SLOPE_FACTOR = 1.0;
    private static final double BORDER_HEIGHT_PERCENTILE = 0.1;
    private static final double LAKE_SURFACE_HINT_PERCENTILE = 0.25;
    private static final int LAKE_MAX_TERRAIN_CUT = intProperty("tellus.water.lakeMaxTerrainCut", 12, 1, 64);
@@ -122,6 +114,7 @@ public final class WaterSurfaceResolver implements TellusCacheHandle {
    private final boolean osmWaterEnabled;
    private final int seaLevel;
    private final Cache<Long, WaterSurfaceResolver.WaterRegionData> regionCache;
+   private final Cache<Long, RiverNetworkPlan> riverPlans = CacheBuilder.newBuilder().maximumSize(128).build();
    private final Cache<Long, Boolean> nearWaterChunkCache;
    private final ThreadLocal<WaterSurfaceResolver.RegionLookup> regionLookup = ThreadLocal.withInitial(WaterSurfaceResolver.RegionLookup::new);
    private final AtomicLong cacheGeneration = new AtomicLong();
@@ -250,12 +243,14 @@ public final class WaterSurfaceResolver implements TellusCacheHandle {
    public void clearCache() {
       this.cacheGeneration.incrementAndGet();
       this.regionCache.invalidateAll();
+      this.riverPlans.invalidateAll();
       this.nearWaterChunkCache.invalidateAll();
       synchronized (this.lakeSurfaceCache) {
          this.lakeSurfaceCache.invalidateAll();
       }
       this.oceanCoastField.clear();
       this.regionCache.cleanUp();
+      this.riverPlans.cleanUp();
       this.nearWaterChunkCache.cleanUp();
       synchronized (this.lakeSurfaceCache) {
          this.lakeSurfaceCache.cleanUp();
@@ -397,15 +392,96 @@ public final class WaterSurfaceResolver implements TellusCacheHandle {
    /**
     * Prevents vanilla's infinite-source rule from turning a terrain-following
     * waterfall into a self-filling flood. The cached region mask deliberately
-    * covers only mapped inland water inside an active Overture waterfall zone;
-    * all other water keeps vanilla source conversion.
+    * covers planned river channels and explicit Overture waterfall zones;
+    * lakes, oceans and unmapped water keep vanilla source conversion.
     */
-   public boolean shouldSuppressWaterSourceConversion(int blockX, int blockZ) {
-      if (!this.osmWaterEnabled || WaterfallNoCarveZone.radiusChunks(this.settings.worldScale()) <= 0) {
+   public boolean shouldSuppressWaterSourceConversion(int blockX, int blockY, int blockZ) {
+      if (!this.osmWaterEnabled) {
          return false;
       }
       WaterSurfaceResolver.WaterRegionData region = this.resolveRegionData(regionCoord(blockX), regionCoord(blockZ));
-      return region.suppressesSourceConversion(blockX, blockZ);
+      return region.suppressesSourceConversion(blockX, blockZ)
+         && isSourceConversionProtectedHeight(blockY, region.terrainSurface(blockX, blockZ), region.waterSurface(blockX, blockZ));
+   }
+
+   static boolean isSourceConversionProtectedHeight(int blockY, int floor, int waterSurface) {
+      return blockY > floor && blockY <= waterSurface;
+   }
+
+   /** Shared by full generation, preview and distant terrain. Never builds a water region recursively. */
+   public RiverNetworkPlan.Column resolveRiverColumn(int blockX, int blockZ) {
+      if (!this.osmWaterEnabled) return null;
+      int tileX = Math.floorDiv(blockX, RiverNetworkPlan.TILE_SIZE);
+      int tileZ = Math.floorDiv(blockZ, RiverNetworkPlan.TILE_SIZE);
+      while (true) {
+         long generation = this.cacheGeneration.get();
+         long key = this.regionKey(tileX, tileZ, generation) ^ RiverNetworkPlan.VERSION;
+         try {
+            RiverNetworkPlan plan = this.riverPlans.get(key, () -> this.buildRiverPlan(tileX, tileZ));
+            if (generation == this.cacheGeneration.get()) return plan.column(blockX, blockZ);
+            this.riverPlans.invalidate(key);
+         } catch (Exception error) {
+            OceanCoverageUnavailableException coverage = findOceanCoverageError(error);
+            if (coverage != null) throw coverage;
+            throw new IllegalStateException("Failed to plan river " + tileX + ":" + tileZ, error);
+         }
+      }
+   }
+
+   private RiverNetworkPlan buildRiverPlan(int tileX, int tileZ) {
+      int size = RiverNetworkPlan.TILE_SIZE;
+      int halo = RiverNetworkPlan.HALO;
+      int side = size + 2 * halo;
+      int area = side * side;
+      int minX = tileX * size - halo;
+      int minZ = tileZ * size - halo;
+      int[] terrain = new int[area];
+      for (int z = 0; z < side; z++) for (int x = 0; x < side; x++) {
+         terrain[z * side + x] = this.sampleSurface(minX + x, minZ + z, false, this.settings.worldScale()).height();
+      }
+      boolean[] water = new boolean[area], noData = new boolean[area], ocean = new boolean[area];
+      boolean[] line = new boolean[area], polygon = new boolean[area], river = new boolean[area];
+      boolean[] expanded = new boolean[area], markers = new boolean[area];
+      long[] bodies = new long[area];
+      int[] hints = new int[area], external = new int[area];
+      Arrays.fill(hints, Integer.MIN_VALUE);
+      Arrays.fill(external, Integer.MIN_VALUE);
+      this.populateOsmBaseWaterMask(minX, minZ, side, terrain, water, noData, ocean,
+         line, polygon, river, expanded, markers, bodies, hints);
+      boolean[] original = new boolean[area];
+      for (int z = 0; z < side; z++) for (int x = 0; x < side; x++) {
+         int i = z * side + x;
+         boolean nearRiver = river[i]
+            || x > 0 && river[i - 1] || x + 1 < side && river[i + 1]
+            || z > 0 && river[i - side] || z + 1 < side && river[i + side];
+         if (water[i] || nearRiver) {
+            OceanCoastSample coast = this.oceanCoastField.sample(minX + x, minZ + z);
+            if (!coast.complete()) throw new OceanCoverageUnavailableException(coast.coverageStatus(), minX + x, minZ + z);
+            if (coast.ocean()) {
+               river[i] = false;
+               external[i] = this.resolveOceanWaterSurface(minX + x, minZ + z);
+            } else if (bodies[i] != 0L) {
+               // Lake polygons own overlapping river centrelines.
+               river[i] = false;
+               external[i] = hints[i] == Integer.MIN_VALUE ? terrain[i] : hints[i];
+            }
+         }
+         original[i] = river[i] && !expanded[i];
+      }
+      return RiverNetworkPlan.build(tileX * size, tileZ * size, size, halo, terrain, river, original, external);
+   }
+
+   /** Coarse raster cells use the same sampling footprint as distant water. */
+   public RiverNetworkPlan.Column resolveRiverColumnForCell(int blockX, int blockZ, int cellSize) {
+      RiverNetworkPlan.Column centre = this.resolveRiverColumn(blockX, blockZ);
+      if (centre != null || cellSize <= 1) return centre;
+      int[] offsets = DhLodWaterResolver.sampleOffsetsForCellSize(cellSize);
+      for (int i = 0; i < offsets.length; i += 2) {
+         if (offsets[i] == 0 && offsets[i + 1] == 0) continue;
+         RiverNetworkPlan.Column column = this.resolveRiverColumn(blockX + offsets[i], blockZ + offsets[i + 1]);
+         if (column != null) return column;
+      }
+      return null;
    }
 
    static boolean isSourceConversionProtectedCell(
@@ -453,7 +529,8 @@ public final class WaterSurfaceResolver implements TellusCacheHandle {
          RIVER_CONNECT_GAP_BLOCKS,
          this.cliffSlopeThreshold,
          this.settings.shorelineBlendCliffLimit(),
-         this.flowParameters
+         this.flowParameters,
+         (x, z) -> this.resolveRiverColumnForCell(x, z, cellSizeBlocks)
       );
       return new WaterSurfaceResolver.PreviewWaterGrid(
          result.terrainSurface(),
@@ -953,6 +1030,11 @@ public final class WaterSurfaceResolver implements TellusCacheHandle {
                } else {
                   oceanHintMask[index] = false;
                   noDataMask[index] = false;
+                  if (waterBodyKeys[index] != 0L) {
+                     // A named lake retains its own level at river confluences.
+                     flowingWaterMask[index] = false;
+                     lineWaterMask[index] = false;
+                  }
                }
             }
          }
@@ -1139,6 +1221,8 @@ public final class WaterSurfaceResolver implements TellusCacheHandle {
                int cell = componentx.cells.getInt(c);
                if (componentx.isOcean) {
                   oceanComponentMask[cell] = true;
+               } else if (flowingWaterMask[cell]) {
+                  inlandWaterMask[cell] = true;
                } else if (waterfallNoCarveMask[cell]
                   || shouldUseDirectLineWaterCell(lineWaterMask[cell], areaWaterMask[cell])) {
                   // A centreline outside polygon coverage follows the DEM
@@ -1154,17 +1238,6 @@ public final class WaterSurfaceResolver implements TellusCacheHandle {
          }
 
          applyDirectRiverWaterSurfaces(waterSurface, surfaceHeights, directRiverWaterMask);
-         smoothExpandedDirectRiverWaterSurfaces(
-            waterSurface,
-            directRiverWaterMask,
-            riverExpansionMask,
-            gridMinX,
-            gridMinZ,
-            gridSize,
-            scratch.smoothedRiverSurface,
-            scratch.riverChunkSurfaceSums,
-            scratch.riverChunkSurfaceCounts
-         );
 
          boolean[] waterMask = scratch.waterMask;
          boolean[] shapedWaterMask = scratch.cascadeMask;
@@ -1184,7 +1257,7 @@ public final class WaterSurfaceResolver implements TellusCacheHandle {
                flowCells.clear();
                for (int cellIndex = 0; cellIndex < componentx.areaWaterCells.size(); cellIndex++) {
                   int cell = componentx.areaWaterCells.getInt(cellIndex);
-                  if (!waterfallNoCarveMask[cell]) {
+                  if (!waterfallNoCarveMask[cell] && !flowingWaterMask[cell]) {
                      flowCells.add(cell);
                   }
                }
@@ -1212,13 +1285,30 @@ public final class WaterSurfaceResolver implements TellusCacheHandle {
                );
             }
          }
+         int[] plannedRiverFloor = scratch.plannedRiverFloor;
+         Arrays.fill(plannedRiverFloor, 0, gridArea, Integer.MIN_VALUE);
+         for (int z = 0; z < gridSize; z++) for (int x = 0; x < gridSize; x++) {
+            int i = z * gridSize + x;
+            if (!flowingWaterMask[i] || oceanComponentMask[i]) continue;
+            RiverNetworkPlan.Column column = this.resolveRiverColumn(gridMinX + x, gridMinZ + z);
+            if (column == null) continue;
+            plannedRiverFloor[i] = column.floor();
+            waterSurface[i] = column.visualSurface();
+            inlandWaterMask[i] = !column.waterfall();
+            directRiverWaterMask[i] = false;
+            terraceWaterMask[i] = false;
+            waterfallDropMask[i] = column.waterfall();
+            waterfallTop[i] = column.fallTop();
+            flowCorrectionMask[i] = surfaceHeights[i] > column.surface();
+            waterfallProtectionMask[i] = column.waterfall();
+         }
          for (int index = 0; index < gridArea; index++) {
             terraceWaterMask[index] &= inlandWaterMask[index];
          }
          rebuildWaterAndLandMasks(waterMask, landMask, oceanComponentMask, inlandWaterMask, directRiverWaterMask, gridArea);
          rebuildWaterMask(shapedWaterMask, oceanComponentMask, inlandWaterMask, gridArea);
          if (this.repairRejectedInlandWaterCells(
-            inlandWaterMask, terraceWaterMask, waterSurface, surfaceHeights, componentIds, components, componentCount
+            inlandWaterMask, terraceWaterMask, waterSurface, surfaceHeights, componentIds, components, componentCount, plannedRiverFloor
          )) {
             rebuildWaterAndLandMasks(waterMask, landMask, oceanComponentMask, inlandWaterMask, directRiverWaterMask, gridArea);
             rebuildWaterMask(shapedWaterMask, oceanComponentMask, inlandWaterMask, gridArea);
@@ -1232,28 +1322,13 @@ public final class WaterSurfaceResolver implements TellusCacheHandle {
          this.computeWeightedDistance(waterDistanceCost, inlandWaterMask, shoreWater, gridSize, maxDistanceBlocks, DIST_COST_CARDINAL);
          int maxDistanceCost = maxDistanceBlocks * DIST_COST_CARDINAL;
          if (this.repairRejectedInlandWaterCells(
-            inlandWaterMask, terraceWaterMask, waterSurface, surfaceHeights, componentIds, components, componentCount
+            inlandWaterMask, terraceWaterMask, waterSurface, surfaceHeights, componentIds, components, componentCount, plannedRiverFloor
          )) {
             rebuildWaterAndLandMasks(waterMask, landMask, oceanComponentMask, inlandWaterMask, directRiverWaterMask, gridArea);
             rebuildWaterMask(shapedWaterMask, oceanComponentMask, inlandWaterMask, gridArea);
             this.collectInlandShoreWater(shoreWater, inlandWaterMask, gridSize, gridArea);
             this.computeWeightedDistance(waterDistanceCost, inlandWaterMask, shoreWater, gridSize, maxDistanceBlocks, DIST_COST_CARDINAL);
          }
-         capExpandedRiverWaterSurfaces(
-            waterSurface,
-            surfaceHeights,
-            flowingWaterMask,
-            directRiverWaterMask,
-            inlandWaterMask,
-            riverExpansionMask,
-            waterfallNoCarveMask,
-            gridMinX,
-            gridMinZ,
-            gridSize,
-            scratch.riverChunkSurfaceSums,
-            scratch.riverChunkSurfaceCounts,
-            scratch.riverChunkSlopeSums
-         );
          this.prepareAdaptiveBlendRadii(
             adaptiveBlendRadius,
             flowCorrectionMask,
@@ -1308,7 +1383,8 @@ public final class WaterSurfaceResolver implements TellusCacheHandle {
                   );
                } else if (waterfallDropMask[indexxxxx]) {
                   waterFlags[indexxxxx] = WATER_WATERFALL_DROP;
-                  terrainSurface[indexxxxx] = surfaceHeights[indexxxxx];
+                  terrainSurface[indexxxxx] = plannedRiverFloor[indexxxxx] != Integer.MIN_VALUE
+                     ? plannedRiverFloor[indexxxxx] : surfaceHeights[indexxxxx];
                } else if (directRiverWaterMask[indexxxxx]) {
                   waterFlags[indexxxxx] = WATER_INLAND;
                   if (!riverExpansionMask[indexxxxx]) {
@@ -1372,6 +1448,11 @@ public final class WaterSurfaceResolver implements TellusCacheHandle {
          this.applyShorelineWallClamp(
             terrainSurface, waterSurface, shapedWaterMask, landMask, cliffLandMask, waterfallProtectionMask, gridSize
          );
+         // A reach's bed is part of its cross section. Generic shoreline passes
+         // must not reconstruct it from a different analysis window.
+         for (int i = 0; i < gridArea; i++) {
+            if (plannedRiverFloor[i] != Integer.MIN_VALUE) terrainSurface[i] = plannedRiverFloor[i];
+         }
          int[] regionTerrain = new int[REGION_SIZE * REGION_SIZE];
          int[] regionWater = new int[REGION_SIZE * REGION_SIZE];
          int[] regionRaw = new int[REGION_SIZE * REGION_SIZE];
@@ -1399,7 +1480,8 @@ public final class WaterSurfaceResolver implements TellusCacheHandle {
                regionFlowingRiver[regionIndex] = flowingWaterMask[gridIndex] && flag == WATER_INLAND;
                regionRiverWidthExpansion[regionIndex] = regionFlowingRiver[regionIndex] && riverExpansionMask[gridIndex];
                regionRaw[regionIndex] = surfaceHeights[gridIndex];
-               regionSourceConversionProtection[regionIndex] = isSourceConversionProtectedCell(
+               regionSourceConversionProtection[regionIndex] = plannedRiverFloor[gridIndex] != Integer.MIN_VALUE
+                  || isSourceConversionProtectedCell(
                   waterfallNoCarveMask[gridIndex],
                   lineWaterMask[gridIndex],
                   areaWaterMask[gridIndex],
@@ -1573,7 +1655,8 @@ public final class WaterSurfaceResolver implements TellusCacheHandle {
 	                  borderHeights.add(borderHeight);
 	                  component.minBorderHeight = Math.min(component.minBorderHeight, borderHeight);
                } else if (componentIds[neighbor] == -1
-                  && canConnectWaterComponentCells(this.osmWaterEnabled, oceanHintMask[index], oceanHintMask[neighbor])) {
+                  && canConnectWaterComponentCells(this.osmWaterEnabled, oceanHintMask[index], oceanHintMask[neighbor])
+                  && (!this.osmWaterEnabled || flowingWaterMask[index] == flowingWaterMask[neighbor])) {
 	                  componentIds[neighbor] = componentId;
 	                  cells.add(neighbor);
                }
@@ -2798,12 +2881,13 @@ public final class WaterSurfaceResolver implements TellusCacheHandle {
       int[] surfaceHeights,
       int[] componentIds,
       WaterSurfaceResolver.ComponentData[] components,
-      int componentCount
+      int componentCount,
+      int[] plannedRiverFloor
    ) {
       boolean maskChanged = false;
 
 	      for (int index = 0; index < inlandWaterMask.length; index++) {
-	         if (inlandWaterMask[index]) {
+	         if (inlandWaterMask[index] && plannedRiverFloor[index] == Integer.MIN_VALUE) {
 	            int componentId = componentIds[index];
 	            WaterSurfaceResolver.ComponentData component = componentId >= 0 && componentId < componentCount ? components[componentId] : null;
 	            if (component != null && component.riverShape && this.shouldRejectWaterCell(component, surfaceHeights[index], waterSurface[index])) {
@@ -3647,205 +3731,6 @@ public final class WaterSurfaceResolver implements TellusCacheHandle {
       return Math.max(1, blocks);
    }
 
-   static void smoothExpandedDirectRiverWaterSurfaces(
-      int[] waterSurface,
-      boolean[] directRiverWaterMask,
-      boolean[] riverExpansionMask,
-      int gridMinX,
-      int gridMinZ,
-      int gridSize,
-      int[] smoothedSurface,
-      long[] riverChunkSurfaceSums,
-      int[] riverChunkSurfaceCounts
-   ) {
-      int area = gridSize * gridSize;
-      boolean hasExpansion = false;
-      for (int index = 0; index < area; index++) {
-         if (directRiverWaterMask[index] && riverExpansionMask[index]) {
-            hasExpansion = true;
-            break;
-         }
-      }
-      if (!hasExpansion) {
-         return;
-      }
-
-      int minChunkX = Math.floorDiv(gridMinX, CHUNK_SIZE);
-      int minChunkZ = Math.floorDiv(gridMinZ, CHUNK_SIZE);
-      int chunkGridWidth = Math.floorDiv(gridMinX + gridSize - 1, CHUNK_SIZE) - minChunkX + 1;
-      int chunkGridHeight = Math.floorDiv(gridMinZ + gridSize - 1, CHUNK_SIZE) - minChunkZ + 1;
-      int chunkArea = chunkGridWidth * chunkGridHeight;
-      Arrays.fill(riverChunkSurfaceSums, 0, chunkArea, 0L);
-      Arrays.fill(riverChunkSurfaceCounts, 0, chunkArea, 0);
-
-      // Only the OSM footprint establishes the chunk reference height. The
-      // widened banks must not raise that reference through their DEM samples.
-      for (int z = 0; z < gridSize; z++) {
-         int chunkZ = Math.floorDiv(gridMinZ + z, CHUNK_SIZE) - minChunkZ;
-         for (int x = 0; x < gridSize; x++) {
-            int index = z * gridSize + x;
-            if (directRiverWaterMask[index] && !riverExpansionMask[index]) {
-               int chunkX = Math.floorDiv(gridMinX + x, CHUNK_SIZE) - minChunkX;
-               int chunkIndex = chunkZ * chunkGridWidth + chunkX;
-               riverChunkSurfaceSums[chunkIndex] += waterSurface[index];
-               riverChunkSurfaceCounts[chunkIndex]++;
-            }
-         }
-      }
-
-      int[] samples = new int[9];
-      for (int pass = 0; pass < 2; pass++) {
-         System.arraycopy(waterSurface, 0, smoothedSurface, 0, area);
-         for (int z = 1; z < gridSize - 1; z++) {
-            for (int x = 1; x < gridSize - 1; x++) {
-               int index = z * gridSize + x;
-               if (!directRiverWaterMask[index] || !riverExpansionMask[index]) {
-                  continue;
-               }
-               int count = 0;
-               for (int dz = -1; dz <= 1; dz++) {
-                  for (int dx = -1; dx <= 1; dx++) {
-                     int neighbor = (z + dz) * gridSize + x + dx;
-                     if (directRiverWaterMask[neighbor]) {
-                        samples[count++] = waterSurface[neighbor];
-                     }
-                  }
-               }
-               if (count >= 2) {
-                  Arrays.sort(samples, 0, count);
-                  smoothedSurface[index] = samples[count / 2];
-               }
-            }
-         }
-         System.arraycopy(smoothedSurface, 0, waterSurface, 0, area);
-      }
-
-      for (int z = 0; z < gridSize; z++) {
-         int chunkZ = Math.floorDiv(gridMinZ + z, CHUNK_SIZE) - minChunkZ;
-         for (int x = 0; x < gridSize; x++) {
-            int index = z * gridSize + x;
-            if (!directRiverWaterMask[index] || !riverExpansionMask[index]) {
-               continue;
-            }
-
-            int chunkX = Math.floorDiv(gridMinX + x, CHUNK_SIZE) - minChunkX;
-            int chunkIndex = chunkZ * chunkGridWidth + chunkX;
-            long sum = riverChunkSurfaceSums[chunkIndex];
-            int count = riverChunkSurfaceCounts[chunkIndex];
-            if (count == 0) {
-               for (int neighborZ = Math.max(0, chunkZ - 1); neighborZ <= Math.min(chunkGridHeight - 1, chunkZ + 1); neighborZ++) {
-                  for (int neighborX = Math.max(0, chunkX - 1); neighborX <= Math.min(chunkGridWidth - 1, chunkX + 1); neighborX++) {
-                     int neighborChunk = neighborZ * chunkGridWidth + neighborX;
-                     sum += riverChunkSurfaceSums[neighborChunk];
-                     count += riverChunkSurfaceCounts[neighborChunk];
-                  }
-               }
-            }
-            if (count > 0) {
-               int chunkMeanSurface = (int)Math.floorDiv(sum, (long)count);
-               waterSurface[index] = Math.min(waterSurface[index], chunkMeanSurface);
-            }
-         }
-      }
-   }
-
-   /**
-    * Applies the final safety ceiling after all river flow processing. It covers
-    * both direct line rivers and Overture riverbank polygons, whose water levels
-    * are resolved later than the early direct-line smoothing pass.
-    */
-   static void capExpandedRiverWaterSurfaces(
-      int[] waterSurface,
-      int[] surfaceHeights,
-      boolean[] flowingWaterMask,
-      boolean[] directRiverWaterMask,
-      boolean[] inlandWaterMask,
-      boolean[] riverExpansionMask,
-      boolean[] waterfallNoCarveMask,
-      int gridMinX,
-      int gridMinZ,
-      int gridSize,
-      long[] riverChunkSurfaceSums,
-      int[] riverChunkSurfaceCounts,
-      double[] riverChunkSlopeSums
-   ) {
-      int area = gridSize * gridSize;
-      int minChunkX = Math.floorDiv(gridMinX, CHUNK_SIZE);
-      int minChunkZ = Math.floorDiv(gridMinZ, CHUNK_SIZE);
-      int chunkGridWidth = Math.floorDiv(gridMinX + gridSize - 1, CHUNK_SIZE) - minChunkX + 1;
-      int chunkGridHeight = Math.floorDiv(gridMinZ + gridSize - 1, CHUNK_SIZE) - minChunkZ + 1;
-      int chunkArea = chunkGridWidth * chunkGridHeight;
-      Arrays.fill(riverChunkSurfaceSums, 0, chunkArea, 0L);
-      Arrays.fill(riverChunkSurfaceCounts, 0, chunkArea, 0);
-      Arrays.fill(riverChunkSlopeSums, 0, chunkArea, 0.0);
-
-      boolean hasExpandedRiverWater = false;
-      for (int z = 0; z < gridSize; z++) {
-         int chunkZ = Math.floorDiv(gridMinZ + z, CHUNK_SIZE) - minChunkZ;
-         for (int x = 0; x < gridSize; x++) {
-            int index = z * gridSize + x;
-            boolean riverWater = directRiverWaterMask[index] || inlandWaterMask[index];
-            if (riverExpansionMask[index] && riverWater && !waterfallNoCarveMask[index]) {
-               hasExpandedRiverWater = true;
-            }
-            if (!flowingWaterMask[index] || riverExpansionMask[index] || !riverWater || waterfallNoCarveMask[index]) {
-               continue;
-            }
-
-            int chunkX = Math.floorDiv(gridMinX + x, CHUNK_SIZE) - minChunkX;
-            int chunkIndex = chunkZ * chunkGridWidth + chunkX;
-            riverChunkSurfaceSums[chunkIndex] += waterSurface[index];
-            riverChunkSurfaceCounts[chunkIndex]++;
-            riverChunkSlopeSums[chunkIndex] += terrainSlopeAt(surfaceHeights, gridSize, x, z);
-         }
-      }
-      if (!hasExpandedRiverWater) {
-         return;
-      }
-
-      for (int z = 0; z < gridSize; z++) {
-         int chunkZ = Math.floorDiv(gridMinZ + z, CHUNK_SIZE) - minChunkZ;
-         for (int x = 0; x < gridSize; x++) {
-            int index = z * gridSize + x;
-            boolean riverWater = directRiverWaterMask[index] || inlandWaterMask[index];
-             if (!riverWater || waterfallNoCarveMask[index]) {
-               continue;
-            }
-
-            int chunkX = Math.floorDiv(gridMinX + x, CHUNK_SIZE) - minChunkX;
-            int chunkIndex = chunkZ * chunkGridWidth + chunkX;
-            // Always use the surrounding 3x3 chunks.  Restricting the window to
-            // chunks without a source made the water reference jump at chunk borders.
-            long sum = 0L;
-            int count = 0;
-            double slopeSum = 0.0;
-            for (int neighborZ = Math.max(0, chunkZ - 1); neighborZ <= Math.min(chunkGridHeight - 1, chunkZ + 1); neighborZ++) {
-               for (int neighborX = Math.max(0, chunkX - 1); neighborX <= Math.min(chunkGridWidth - 1, chunkX + 1); neighborX++) {
-                  int neighborChunk = neighborZ * chunkGridWidth + neighborX;
-                  sum += riverChunkSurfaceSums[neighborChunk];
-                  count += riverChunkSurfaceCounts[neighborChunk];
-                  slopeSum += riverChunkSlopeSums[neighborChunk];
-               }
-            }
-            if (count > 0) {
-               int meanSurface = (int)Math.floorDiv(sum, (long)count);
-               double meanSlope = Mth.clamp(slopeSum / (double)count, 0.0, 3.0);
-               int maximumSurface = meanSurface + riverExpansionChunkHeightAllowance(meanSlope);
-               waterSurface[index] = Math.min(waterSurface[index], maximumSurface);
-            }
-         }
-      }
-   }
-
-   static int riverExpansionChunkHeightAllowance(double terrainSlope) {
-      return Mth.clamp(
-         RIVER_EXPANSION_CHUNK_HEIGHT_ALLOWANCE_MIN
-            + (int)Math.floor(Mth.clamp(terrainSlope, 0.0, 3.0) * RIVER_EXPANSION_CHUNK_HEIGHT_SLOPE_FACTOR),
-         RIVER_EXPANSION_CHUNK_HEIGHT_ALLOWANCE_MIN,
-         RIVER_EXPANSION_CHUNK_HEIGHT_ALLOWANCE_MAX
-      );
-   }
-
    private static double terrainSlopeAt(int[] surfaceHeights, int gridSize, int x, int z) {
       if (x <= 0 || z <= 0 || x >= gridSize - 1 || z >= gridSize - 1) {
          return 0.0;
@@ -4110,11 +3995,8 @@ public final class WaterSurfaceResolver implements TellusCacheHandle {
       private int[] componentIds;
       private WaterSurfaceResolver.ComponentData[] components;
       private int[] waterSurface;
-      private int[] smoothedRiverSurface;
-      private long[] riverChunkSurfaceSums;
-      private int[] riverChunkSurfaceCounts;
-      private double[] riverChunkSlopeSums;
       private int[] terrainSurface;
+      private int[] plannedRiverFloor;
       private byte[] waterFlags;
 	      private boolean[] inlandWaterMask;
 	      private boolean[] oceanComponentMask;
@@ -4170,11 +4052,8 @@ public final class WaterSurfaceResolver implements TellusCacheHandle {
             this.componentIds = new int[size];
             this.components = new WaterSurfaceResolver.ComponentData[size];
             this.waterSurface = new int[size];
-            this.smoothedRiverSurface = new int[size];
-            this.riverChunkSurfaceSums = new long[size];
-            this.riverChunkSurfaceCounts = new int[size];
-            this.riverChunkSlopeSums = new double[size];
             this.terrainSurface = new int[size];
+            this.plannedRiverFloor = new int[size];
             this.waterFlags = new byte[size];
 	            this.inlandWaterMask = new boolean[size];
 	            this.oceanComponentMask = new boolean[size];

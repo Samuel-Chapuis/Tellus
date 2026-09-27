@@ -219,6 +219,13 @@ public final class DhLodWaterResolver implements TellusCacheHandle {
             return new DhLodWaterResolver.AreaResult(terrainSurface, waterSurface, hasWater, ocean);
          }
 
+         RiverNetworkPlan.Column[] planned = new RiverNetworkPlan.Column[area];
+         for (int z = 0; z < lodSizePoints; z++) for (int x = 0; x < lodSizePoints; x++) {
+            int i = z * lodSizePoints + x;
+            if (osmWaterEnabled && flowingWater[i] && !ocean[i] && waterBodyKeys[i] == 0L) {
+               planned[i] = this.fullWaterResolver.resolveRiverColumnForCell(worldXs[x], worldZs[z], cellSize);
+            }
+         }
          this.assignWaterSurfaces(
 	            waterSurface,
 	            baseTerrainSurface,
@@ -239,7 +246,8 @@ public final class DhLodWaterResolver implements TellusCacheHandle {
 	            rasterized.sourceGeneration(),
 	            lodSizePoints,
 	            seaLevel,
-	            cellSize
+	            cellSize,
+               planned
          );
          this.applyInlandOceanSurfaceTransition(
             waterSurface, hasWater, ocean, waterfall, demFlowWater, lodSizePoints, cellSize
@@ -319,6 +327,20 @@ public final class DhLodWaterResolver implements TellusCacheHandle {
             cellSize,
             useDetailedWaterResolver
          );
+         // Reuse block-space river plans, independent of LOD resolution.
+         for (int z = 0; z < lodSizePoints; z++) for (int x = 0; x < lodSizePoints; x++) {
+            int i = z * lodSizePoints + x;
+            RiverNetworkPlan.Column column = planned[i];
+            if (column == null) continue;
+            terrainSurface[i] = column.floor();
+            waterSurface[i] = column.visualSurface();
+            hasWater[i] = true; // Distant rendering represents the falling sheet too.
+            waterfall[i] = column.waterfall();
+            waterfallProtection[i] = column.waterfall();
+            directLineWater[i] = false;
+            demFlowWater[i] = true;
+            flowCorrection[i] = baseTerrainSurface[i] > column.surface();
+         }
          applyOceanLodDepthCompression(terrainSurface, waterSurface, ocean, oceanCoastDistance);
          markLodWaterfallProtection(
             waterfall,
@@ -378,6 +400,7 @@ public final class DhLodWaterResolver implements TellusCacheHandle {
          }
 
          this.applyExperimentalOceanDepthCap(terrainSurface, waterSurface, ocean);
+         for (int i = 0; i < area; i++) if (planned[i] != null) terrainSurface[i] = planned[i].floor();
          return new DhLodWaterResolver.AreaResult(terrainSurface, waterSurface, hasWater, ocean);
       }
    }
@@ -443,7 +466,8 @@ public final class DhLodWaterResolver implements TellusCacheHandle {
 	      long sourceGeneration,
 	      int lodSizePoints,
 	      int seaLevel,
-	      int cellSize
+	      int cellSize,
+      RiverNetworkPlan.Column[] planned
    ) {
       int area = lodSizePoints * lodSizePoints;
       boolean[] visited = new boolean[area];
@@ -455,6 +479,7 @@ public final class DhLodWaterResolver implements TellusCacheHandle {
       int[] waterfallTop = new int[area];
 
       for (int start = 0; start < area; start++) {
+         if (planned[start] != null) continue;
          if (!hasWater[start]) {
             waterSurface[start] = baseTerrainSurface[start];
          } else if (ocean[start]) {
@@ -526,6 +551,7 @@ public final class DhLodWaterResolver implements TellusCacheHandle {
                   int nz = z + NEIGHBOR_OFFSETS[n + 1];
                   if (nx >= 0 && nz >= 0 && nx < lodSizePoints && nz < lodSizePoints) {
                      int neighbor = nz * lodSizePoints + nx;
+                     if (planned[neighbor] != null) continue;
                      if (hasWater[neighbor] && !ocean[neighbor]) {
                         if (!visited[neighbor]) {
                            visited[neighbor] = true;
@@ -1730,7 +1756,7 @@ public final class DhLodWaterResolver implements TellusCacheHandle {
       return landMaskSample != null && landMaskSample.known() && !landMaskSample.land();
    }
 
-   private static int[] sampleOffsetsForCellSize(int cellSize) {
+   static int[] sampleOffsetsForCellSize(int cellSize) {
       if (cellSize <= 1) {
          return SAMPLE_OFFSETS_SINGLE;
       } else if (cellSize == 2) {

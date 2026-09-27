@@ -1,5 +1,17 @@
 # Third-Party Notices
 
+## Streams (design reference)
+
+Tellus's river planner is an original Java implementation inspired by Streams'
+channel sections, level reaches and waterfall transitions. No Streams runtime
+dependency or custom fluid/block implementation is bundled.
+
+Streams copyright (c) 2015 delvr. Licensed under the MIT License.
+
+Source: https://github.com/delvr/Streams
+
+Modern design reference: https://github.com/delvr/Farseek-Mods
+
 ## Overture Maps base theme
 
 This product downloads and caches Overture Maps base-theme vector tiles for land-cover and water classification.

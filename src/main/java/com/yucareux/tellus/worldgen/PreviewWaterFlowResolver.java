@@ -3,6 +3,7 @@ package com.yucareux.tellus.worldgen;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
 import java.util.Arrays;
 import java.util.PriorityQueue;
+import java.util.function.BiFunction;
 
 /**
  * Applies the full-detail inland-water flow rules to an already sampled preview
@@ -37,6 +38,20 @@ final class PreviewWaterFlowResolver {
       int cliffSlopeThreshold,
       boolean limitCliffSlope,
       InlandWaterFlowAnalyzer.Parameters flowParameters
+   ) {
+      return resolve(gridSize, cellSizeBlocks, baseWorldX, baseWorldZ, rawTerrain, inlandWater,
+         oceanWater, lineWater, areaWater, flowingWater, waterfallNoCarve, oceanWaterSurface,
+         riverMinLength, riverMaxWidth, lakeMaxTerrainCut, riverConnectGapBlocks, cliffSlopeThreshold,
+         limitCliffSlope, flowParameters, null);
+   }
+
+   static Result resolve(
+      int gridSize, int cellSizeBlocks, int baseWorldX, int baseWorldZ, int[] rawTerrain,
+      boolean[] inlandWater, boolean[] oceanWater, boolean[] lineWater, boolean[] areaWater,
+      boolean[] flowingWater, boolean[] waterfallNoCarve, int[] oceanWaterSurface,
+      int riverMinLength, int riverMaxWidth, int lakeMaxTerrainCut, int riverConnectGapBlocks,
+      int cliffSlopeThreshold, boolean limitCliffSlope, InlandWaterFlowAnalyzer.Parameters flowParameters,
+      BiFunction<Integer, Integer, RiverNetworkPlan.Column> riverSampler
    ) {
       int area = checkedArea(gridSize);
       requireLength(rawTerrain, area, "raw terrain");
@@ -94,6 +109,11 @@ final class PreviewWaterFlowResolver {
          mappedInlandWater[index] |= activeInlandWater[index];
       }
 
+      RiverNetworkPlan.Column[] planned = new RiverNetworkPlan.Column[area];
+      if (riverSampler != null) for (int i = 0; i < area; i++) {
+         if (previewFlowingWater[i] && !oceanWater[i]) planned[i] = riverSampler.apply(
+            baseWorldX + i % gridSize * cellSizeBlocks, baseWorldZ + i / gridSize * cellSizeBlocks);
+      }
       boolean[] componentRiver = new boolean[area];
       int[] componentWidthBlocks = new int[area];
       InlandWaterFlowAnalyzer.Workspace flowWorkspace = new InlandWaterFlowAnalyzer.Workspace();
@@ -104,7 +124,7 @@ final class PreviewWaterFlowResolver {
       int componentCount = 0;
 
       for (int start = 0; start < area; start++) {
-         if (!activeInlandWater[start] || componentIds[start] >= 0) {
+         if (!activeInlandWater[start] || componentIds[start] >= 0 || planned[start] != null) {
             continue;
          }
 
@@ -145,6 +165,7 @@ final class PreviewWaterFlowResolver {
                   continue;
                }
                int neighbor = nz * gridSize + nx;
+               if (planned[neighbor] != null) continue;
                if (activeInlandWater[neighbor]) {
                   if (componentIds[neighbor] < 0) {
                      componentIds[neighbor] = componentCount;
@@ -241,6 +262,18 @@ final class PreviewWaterFlowResolver {
          componentCount++;
       }
 
+      for (int i = 0; i < area; i++) {
+         RiverNetworkPlan.Column column = planned[i];
+         if (column == null) continue;
+         waterSurface[i] = column.visualSurface();
+         activeInlandWater[i] = !column.waterfall();
+         directLineWater[i] = false;
+         waterfallDrop[i] = column.waterfall();
+         waterfallProtection[i] = column.waterfall();
+         correctionRequired[i] = rawTerrain[i] > column.surface();
+         adaptiveBlendRadius[i] = flowParameters.baseBlendBlocks();
+      }
+
       int[] distanceFromShoreCells = distanceFromShore(
          gridSize,
          activeInlandWater,
@@ -249,6 +282,10 @@ final class PreviewWaterFlowResolver {
          componentIds
       );
       for (int index = 0; index < area; index++) {
+         if (planned[index] != null) {
+            terrainSurface[index] = planned[index].floor();
+            continue;
+         }
          if (directLineWater[index]) {
             waterSurface[index] = WaterSurfaceResolver.directLineRiverWaterSurface(rawTerrain[index]);
             terrainSurface[index] = WaterSurfaceResolver.directLineRiverTerrainSurface(waterSurface[index]);
@@ -320,6 +357,7 @@ final class PreviewWaterFlowResolver {
          limitCliffSlope
       );
 
+      for (int i = 0; i < area; i++) if (planned[i] != null) terrainSurface[i] = planned[i].floor();
       return new Result(terrainSurface, waterSurface, activeInlandWater, waterfallDrop, waterfallProtection);
    }
 
